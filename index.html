@@ -2,194 +2,340 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#6658e8">
-  <meta name="description" content="ExpenseFlow Pro personal finance tracker">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="ExpenseFlow Pro - Personal daily expense tracker">
+  <title>ExpenseFlow Pro</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
-  <title>ExpenseFlow Pro</title>
 </head>
 <body>
   <div id="toast" class="toast" role="status"></div>
 
-  <main id="auth" class="auth-layout">
-    <section class="hero">
-      <div class="logo">₹</div>
-      <p class="eyebrow">PERSONAL FINANCE, SIMPLIFIED</p>
-      <h1>Make every rupee <span>count.</span></h1>
-      <p class="muted">Track expenses, understand your habits, and stay in control.</p>
-    </section>
-
+  <!-- AUTH -->
+  <main id="authPage" class="auth-page">
     <section class="auth-card">
-      <div class="auth-header">
-        <strong class="brand">ExpenseFlow <span>Pro</span></strong>
-        <button id="authTheme" class="icon-btn" type="button" aria-label="Toggle theme">◐</button>
-      </div>
+      <div class="brand-mark">₹</div>
+      <h1>ExpenseFlow <span>Pro</span></h1>
+      <p class="muted">Your money. Your control.</p>
 
-      <div class="tabs">
-        <button id="loginTab" class="tab active" type="button">Login</button>
-        <button id="registerTab" class="tab" type="button">Register</button>
-      </div>
-
-      <form id="loginForm">
+      <form id="loginForm" class="auth-form">
         <h2>Welcome back</h2>
-        <p class="muted">Enter your unique 5-digit PIN.</p>
-        <label for="loginPin">5-digit PIN</label>
-        
-<input
-  id="loginPin"
-  type="password"
-  maxlength="5"
-  inputmode="numeric"
-  pattern="[0-9]{5}"
-  autocomplete="off"
-  name="expenseflow-login-pin"
-  placeholder="Enter your 5-digit PIN"
-  required
-/>
-
-        <button class="primary full" type="submit">Login →</button>
-        <button class="text-btn" id="forgotBtn" type="button">Forgot PIN?</button>
+        <p class="muted">Enter your 5-digit PIN to continue.</p>
+        <label for="loginPin">Your PIN</label>
+        <input id="loginPin" name="expenseflow-login-pin"
+          type="password" inputmode="numeric" pattern="[0-9]{5}"
+          maxlength="5" placeholder="Enter 5-digit PIN"
+          autocomplete="off" autocapitalize="off" required>
+        <button class="btn primary full" type="submit">Login</button>
+        <div class="auth-links">
+          <button type="button" class="text-btn" id="showRegister">Create account</button>
+          <button type="button" class="text-btn" id="showForgot">Forgot PIN?</button>
+        </div>
       </form>
 
-      <form id="registerForm" class="hidden">
-        <h2>Create account</h2>
-        <p class="muted">Your transactions will be kept separate from other profiles.</p>
-        <label for="regName">Full name</label>
-        <input id="regName" maxlength="70" autocomplete="name" required>
-        <label for="regPin">Choose a unique 5-digit PIN</label>
-        <input id="regPin" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required>
-        <label for="regPin2">Confirm PIN</label>
-        <input id="regPin2" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required>
-        <label for="regDob">Date of birth</label>
-        <input id="regDob" type="date" autocomplete="bday" required>
-        <p class="hint">PINs must be unique among accounts stored in this browser.</p>
-        <button class="primary full" type="submit">Create account →</button>
+      <form id="registerForm" class="auth-form hidden">
+        <h2>Create your account</h2>
+        <label for="registerName">Full name</label>
+        <input id="registerName" name="expenseflow-new-name"
+          type="text" placeholder="Your name" autocomplete="off" required>
+
+        <label for="registerPin">Create 5-digit PIN</label>
+        <input id="registerPin" name="expenseflow-new-pin"
+          type="password" inputmode="numeric" pattern="[0-9]{5}"
+          maxlength="5" placeholder="Choose a 5-digit PIN"
+          autocomplete="new-password" required>
+
+        <label for="confirmPin">Confirm PIN</label>
+        <input id="confirmPin" name="expenseflow-confirm-pin"
+          type="password" inputmode="numeric" pattern="[0-9]{5}"
+          maxlength="5" placeholder="Enter PIN again"
+          autocomplete="new-password" required>
+
+        <label for="registerDob">Date of birth (for recovery)</label>
+        <input id="registerDob" name="expenseflow-birthday"
+          type="date" autocomplete="off" required>
+
+        <button class="btn primary full" type="submit">Create account</button>
+        <button type="button" class="text-btn back-link" id="backToLogin1">Back to login</button>
       </form>
 
-      <form id="forgotForm" class="hidden">
-        <h2>Recover your PIN</h2>
-        <p class="muted">Enter the name and date of birth used at registration.</p>
+      <form id="forgotForm" class="auth-form hidden">
+        <h2>Recover your account</h2>
+        <p class="muted">Enter your name and date of birth.</p>
         <label for="forgotName">Full name</label>
-        <input id="forgotName" autocomplete="name" required>
+        <input id="forgotName" name="expenseflow-recovery-name"
+          type="text" autocomplete="off" required>
+
         <label for="forgotDob">Date of birth</label>
-        <input id="forgotDob" type="date" required>
-        <button class="primary full" type="submit">Verify identity →</button>
-        <button id="backLogin" class="text-btn" type="button">Back to login</button>
+        <input id="forgotDob" name="expenseflow-recovery-dob"
+          type="date" autocomplete="off" required>
+
+        <button class="btn primary full" type="submit">Verify details</button>
+        <button type="button" class="text-btn back-link" id="backToLogin2">Back to login</button>
       </form>
 
-      <form id="resetForm" class="hidden">
+      <form id="resetForm" class="auth-form hidden">
         <h2>Set a new PIN</h2>
-        <p id="resetInfo" class="muted">Identity verified.</p>
-        <label for="newPin">New unique 5-digit PIN</label>
-        <input id="newPin" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" required>
-        <label for="newPin2">Confirm new PIN</label>
-        <input id="newPin2" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" required>
-        <button class="primary full" type="submit">Reset PIN →</button>
-        <button id="cancelReset" class="text-btn" type="button">Cancel</button>
+        <label for="resetPin">New 5-digit PIN</label>
+        <input id="resetPin" name="expenseflow-reset-pin"
+          type="password" inputmode="numeric" pattern="[0-9]{5}"
+          maxlength="5" autocomplete="new-password" required>
+
+        <label for="resetPinConfirm">Confirm new PIN</label>
+        <input id="resetPinConfirm" name="expenseflow-reset-confirm"
+          type="password" inputmode="numeric" pattern="[0-9]{5}"
+          maxlength="5" autocomplete="new-password" required>
+
+        <button class="btn primary full" type="submit">Reset PIN</button>
+        <button type="button" class="text-btn back-link" id="backToLogin3">Cancel</button>
       </form>
-      <p class="auth-foot">Saved in this browser on this device.</p>
+
+      <p class="auth-foot muted">Private personal expense tracking</p>
     </section>
   </main>
 
-  <div id="app" class="app hidden">
+  <!-- APP -->
+  <div id="appPage" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand side-brand"><span class="logo small">₹</span> ExpenseFlow <span>Pro</span></div>
-      <p class="nav-label">WORKSPACE</p>
-      <nav>
-        <button class="nav active" data-page="overview">▦ <span>Overview</span></button>
-        <button class="nav" data-page="transactions">↕ <span>Transactions</span></button>
-        <button class="nav" data-page="reports">▥ <span>Reports</span></button>
+      <a href="#" class="brand" id="brandHome">
+        <span class="brand-mark small">₹</span>
+        <span>ExpenseFlow <b>Pro</b></span>
+      </a>
+
+      <div class="profile-mini">
+        <div class="avatar" id="userAvatar">U</div>
+        <div>
+          <strong id="userName">User</strong>
+          <small>Personal account</small>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <button class="nav-link active" data-page="overview">▦ <span>Overview</span></button>
+        <button class="nav-link" data-page="transactions">↕ <span>Transactions</span></button>
+        <button class="nav-link" data-page="reports">▥ <span>Reports</span></button>
       </nav>
-      <div class="side-bottom">
-        <button id="installBtn" class="nav hidden">↓ <span>Install app</span></button>
-        <button id="themeBtn" class="nav">◐ <span>Toggle theme</span></button>
-        <button id="logoutBtn" class="nav">↪ <span>Log out</span></button>
-        <p class="privacy-note">● Private on this device<br><small>Local browser storage</small></p>
+
+      <div class="sidebar-bottom">
+        <button id="themeBtn" class="nav-link">◐ <span>Toggle theme</span></button>
+        <button id="exportBtn" class="nav-link">⇩ <span>Export CSV</span></button>
+        <button id="logoutBtn" class="nav-link danger-text">↪ <span>Logout</span></button>
+        <small class="version">ExpenseFlow Pro · Local edition</small>
       </div>
     </aside>
 
-    <main class="main">
+    <main class="main-content">
       <header class="topbar">
-        <div><p class="eyebrow">YOUR MONEY, IN FOCUS</p><h1 id="pageTitle">Overview</h1></div>
-        <div class="user-pill"><span id="avatar" class="avatar">U</span><strong id="userName">User</strong><button id="mobileTheme" class="icon-btn" type="button" aria-label="Toggle theme">◐</button></div>
+        <div>
+          <p class="eyebrow">PERSONAL FINANCE</p>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="mobileThemeBtn" class="icon-btn" aria-label="Toggle theme">◐</button>
+          <button class="btn primary" id="quickAddBtn">＋ Add transaction</button>
+        </div>
       </header>
 
-      <section id="overviewPage" class="page">
-        <div class="page-heading">
-          <div><h2 id="welcome">Your daily overview</h2><p class="muted">Here is your money snapshot.</p></div>
-          <div class="date-box"><label for="selectedDate">Selected day</label><input id="selectedDate" type="date"></div>
+      <!-- OVERVIEW -->
+      <section id="overviewPage" class="page-section">
+        <div class="welcome-row">
+          <div>
+            <h2>Good to see you, <span id="welcomeName">User</span>.</h2>
+            <p class="muted">Here is your money snapshot.</p>
+          </div>
+          <div class="date-chip" id="todayLabel"></div>
         </div>
 
-        <div class="stats">
-          <article class="stat"><span>Income</span><strong id="incomeTotal">₹0.00</strong><small>Received this day</small></article>
-          <article class="stat"><span>Expenses</span><strong id="expenseTotal">₹0.00</strong><small>Spent this day</small></article>
-          <article class="stat"><span>Balance</span><strong id="balanceTotal">₹0.00</strong><small>Income minus expenses</small></article>
-          <article class="stat"><span>Entries</span><strong id="entryTotal">0</strong><small>Transactions this day</small></article>
+        <div class="stats-grid">
+          <article class="stat-card">
+            <span class="stat-label">Today's expenses</span>
+            <strong id="todayExpense">₹0.00</strong>
+            <small>Money spent today</small>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Today's income</span>
+            <strong id="todayIncome">₹0.00</strong>
+            <small>Money received today</small>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">This month's expenses</span>
+            <strong id="monthExpense">₹0.00</strong>
+            <small>Current month</small>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Net balance</span>
+            <strong id="netBalance">₹0.00</strong>
+            <small>All recorded income minus expenses</small>
+          </article>
         </div>
 
-        <div class="columns">
+        <div class="content-grid">
           <section class="panel">
-            <div class="panel-heading"><div><h3>Daily transactions</h3><p class="muted">Record money spent or received.</p></div><button id="addBtn" class="primary compact" type="button">＋ Add entry</button></div>
-            <form id="entryForm" class="entry-form">
-              <input id="editId" type="hidden">
-              <div><label for="entryType">Type</label><select id="entryType"><option value="expense">Expense</option><option value="income">Income</option></select></div>
-              <div><label for="entryTitle">Description</label>
-                
-<input
-  id="description"
-  type="text"
-  name="transaction-description"
-  placeholder="Enter transaction description"
-  autocomplete="off"
-  autocorrect="off"
-  spellcheck="false"
-/></div>
-
-              <div><label for="entryAmount">Amount (₹)</label><input id="entryAmount" type="number" min="0.01" step="0.01" required placeholder="0.00"></div>
-              <div><label for="entryCategory">Category</label><select id="entryCategory"><option>Food</option><option>Travel</option><option>Shopping</option><option>Bills</option><option>Health</option><option>Education</option><option>Salary</option><option>Business</option><option>Other</option></select></div>
-              <div><label for="entryDate">Transaction date</label><input id="entryDate" type="date" required></div>
-              <div><label for="entryNote">Note (optional)</label><input id="entryNote" maxlength="200" placeholder="Add a note"></div>
-              <div class="form-actions"><button id="cancelEdit" class="secondary hidden" type="button">Cancel</button><button class="primary compact" type="submit">Save entry</button></div>
-            </form>
-            <div class="table-wrap"><table><thead><tr><th>Transaction</th><th>Category</th><th>Date</th><th>Amount</th><th>Actions</th></tr></thead><tbody id="dayBody"></tbody></table><p id="dayEmpty" class="empty">No entries for this day yet.</p></div>
+            <div class="panel-heading">
+              <div>
+                <h3>Recent transactions</h3>
+                <p class="muted">Your latest activity</p>
+              </div>
+              <button class="text-btn" data-goto="transactions">View all →</button>
+            </div>
+            <div id="recentTransactions" class="transaction-list"></div>
           </section>
 
-          <section class="panel quick-panel">
-            <h3>Quick actions</h3><p class="muted">Manage your daily records.</p>
-            <button class="action" id="draftBtn"><span>▣</span><div><strong>Save draft</strong><small>Snapshot this day's entries</small></div>→</button>
-            <button class="action" id="restoreBtn"><span>↶</span><div><strong>Restore draft</strong><small>Replace entries with the snapshot</small></div>→</button>
-            <button class="action" id="saveDayBtn"><span>✓</span><div><strong>Save day</strong><small>Save this day's record</small></div>→</button>
-            <button class="action" id="exportBtn"><span>⇩</span><div><strong>Export CSV</strong><small>Download your transactions</small></div>→</button>
-            <p id="saveStatus" class="save-status">Changes save automatically.</p>
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Quick insights</h3>
+                <p class="muted">This month's breakdown</p>
+              </div>
+            </div>
+            <div id="overviewInsights" class="insights-list"></div>
           </section>
         </div>
-
-        <section class="panel recent-panel"><div class="panel-heading"><div><h3>Recent activity</h3><p class="muted">Your latest transactions across all dates.</p></div><button class="text-btn" data-go="transactions" type="button">View all →</button></div><div id="recentList" class="recent-list"></div></section>
       </section>
 
-      <section id="transactionsPage" class="page hidden">
-        <div class="page-heading"><div><h2>All transactions</h2><p class="muted">Search and review your history.</p></div><button id="exportAllBtn" class="secondary" type="button">⇩ Export CSV</button></div>
+      <!-- TRANSACTIONS -->
+      <section id="transactionsPage" class="page-section hidden">
+        <section class="panel entry-panel" id="entryPanel">
+          <div class="panel-heading">
+            <div>
+              <h2 id="entryHeading">Daily transaction</h2>
+              <p class="muted">Add income or expense to your records.</p>
+            </div>
+            <span class="form-badge">TRANSACTION ENTRY</span>
+          </div>
+
+          <form id="entryForm">
+            <input type="hidden" id="editTransactionId" value="">
+
+            <div class="form-grid">
+              <div class="field">
+                <label for="entryDate">Date</label>
+                <input id="entryDate" type="date" required>
+              </div>
+
+              <div class="field">
+                <label for="entryType">Transaction type</label>
+                <select id="entryType" required>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="entryCategory">Category</label>
+                <select id="entryCategory" required>
+                  <option value="Food">Food & dining</option>
+                  <option value="Travel">Travel</option>
+                  <option value="Shopping">Shopping</option>
+                  <option value="Bills">Bills & utilities</option>
+                  <option value="Health">Health</option>
+                  <option value="Education">Education</option>
+                  <option value="Salary">Salary</option>
+                  <option value="Business">Business</option>
+                  <option value="Home">Home</option>
+                  <option value="Entertainment">Entertainment</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="entryAmount">Amount (₹)</label>
+                <input id="entryAmount" type="text" inputmode="decimal" placeholder="0.00" required>
+                
+              </div>
+
+              <div class="field field-wide">
+                <label for="entryTitle">Description</label>
+                <input id="entryTitle" name="transaction-description"
+                  type="text" maxlength="120"
+                  placeholder="What was this transaction for?"
+                  autocomplete="off" autocorrect="off"
+                  spellcheck="false" required>
+              </div>
+
+              <div class="field field-wide">
+                <label for="entryNote">Note (Optional)</label>
+                <textarea id="entryNote" rows="3" maxlength="1000"
+                  placeholder="Add any extra details..."
+                  autocomplete="off"></textarea>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn primary" id="saveEntryBtn">Save transaction</button>
+              <button type="button" class="btn secondary" id="draftBtn">Save draft</button>
+              <button type="button" class="btn ghost hidden" id="cancelEditBtn">Cancel edit</button>
+              <button type="reset" class="btn ghost" id="clearEntryBtn">Clear form</button>
+            </div>
+          </form>
+          <p id="entryMessage" class="form-message" aria-live="polite"></p>
+        </section>
+
         <section class="panel">
-          <div class="filters"><input id="searchBox" placeholder="Search descriptions or notes…"><select id="typeFilter"><option value="all">All types</option><option value="expense">Expenses</option><option value="income">Income</option></select><select id="categoryFilter"><option value="all">All categories</option><option>Food</option><option>Travel</option><option>Shopping</option><option>Bills</option><option>Health</option><option>Education</option><option>Salary</option><option>Business</option><option>Other</option></select></div>
-          <div class="table-wrap"><table><thead><tr><th>Transaction</th><th>Category</th><th>Date</th><th>Type</th><th>Amount</th><th>Actions</th></tr></thead><tbody id="allBody"></tbody></table><p id="allEmpty" class="empty">No matching transactions.</p></div>
+          <div class="panel-heading transaction-heading">
+            <div>
+              <h2>Transaction history</h2>
+              <p class="muted">Filter, review, edit or delete entries.</p>
+            </div>
+            <div class="filter-controls">
+              <input id="filterDate" type="date" aria-label="Filter by date">
+              <select id="filterType" aria-label="Filter by type">
+                <option value="all">All types</option>
+                <option value="expense">Expenses</option>
+                <option value="income">Income</option>
+              </select>
+              <button id="clearFiltersBtn" class="btn ghost" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="transactionTableWrap" class="table-wrap"></div>
         </section>
       </section>
 
-      <section id="reportsPage" class="page hidden">
-        <div class="page-heading"><div><h2>Reports & insights</h2><p class="muted">Understand your spending patterns.</p></div><div class="date-box"><label for="reportMonth">Reporting month</label><input id="reportMonth" type="month"></div></div>
-        <div class="stats">
-          <article class="stat"><span>Monthly income</span><strong id="monthIncome">₹0.00</strong><small>Selected month</small></article>
-          <article class="stat"><span>Monthly expenses</span><strong id="monthExpense">₹0.00</strong><small>Selected month</small></article>
-          <article class="stat"><span>Net balance</span><strong id="monthBalance">₹0.00</strong><small>Income less expenses</small></article>
-          <article class="stat"><span>Average daily spend</span><strong id="monthAverage">₹0.00</strong><small>Days with expenses</small></article>
+      <!-- REPORTS -->
+      <section id="reportsPage" class="page-section hidden">
+        <div class="report-intro">
+          <h2>Your spending report</h2>
+          <p class="muted">A breakdown of your recorded transactions.</p>
         </div>
-        <div class="columns report-columns"><section class="panel"><h3>Spending by category</h3><p class="muted">Expenses in selected month.</p><div id="categoryReport" class="report-list"></div></section><section class="panel"><h3>Monthly summary</h3><p class="muted">Recent monthly income and expenses.</p><div id="monthlyReport" class="report-list"></div></section></div>
+        <div class="stats-grid report-stats">
+          <article class="stat-card">
+            <span class="stat-label">Total income</span>
+            <strong id="reportIncome">₹0.00</strong>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Total expenses</span>
+            <strong id="reportExpense">₹0.00</strong>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Net amount</span>
+            <strong id="reportNet">₹0.00</strong>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Transactions</span>
+            <strong id="reportCount">0</strong>
+          </article>
+        </div>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h3>Expense by category</h3>
+              <p class="muted">Based on all your saved expense entries.</p>
+            </div>
+          </div>
+          <div id="categoryReport" class="category-report"></div>
+        </section>
       </section>
-      <footer>ExpenseFlow Pro · Your money, more mindful.</footer>
+
+      <footer class="app-footer">
+        ExpenseFlow Pro · Your records are stored in this browser.
+      </footer>
     </main>
   </div>
+
   <script src="script.js"></script>
 </body>
 </html>
+
+  
