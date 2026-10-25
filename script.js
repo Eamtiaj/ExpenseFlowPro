@@ -1,614 +1,1095 @@
-
 "use strict";
 
+/* =========================================
+   ExpenseFlow Pro
+   Local multi-user expense tracker
+   Voice recording intentionally excluded
+========================================= */
+
 const DB_KEY = "expenseflow_pro_multiuser_v2";
-const $ = id => document.getElementById(id);
 
-const state = {
-  userId: null,
-  resetUserId: null,
-  page: "overview",
-  theme: "light",
-  installPrompt: null
+const $ = (id) => document.getElementById(id);
+
+const todayISO = () => {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  return new Date(now.getTime() - offset * 60000)
+    .toISOString().slice(0, 10);
 };
 
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-};
-const currentMonth = () => today().slice(0,7);
-const cleanName = s => s.trim().replace(/\s+/g," ");
-const normalizedName = s => cleanName(s).toLocaleLowerCase();
-const id = () => crypto.randomUUID ? crypto.randomUUID() : Date.now()+"-"+Math.random().toString(36).slice(2);
-const money = n => new Intl.NumberFormat("en-IN", {
-  style:"currency", currency:"INR", maximumFractionDigits:2
-}).format(Number(n)||0);
+const makeId = () =>
+  window.crypto?.randomUUID
+    ? crypto.randomUUID()
+    : "id-" + Date.now() + "-" + Math.random().toString(36).slice(2);
 
-function readDB() {
+const money = (amount) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2
+  }).format(Number(amount) || 0);
+
+const prettyDate = (date) => {
+  if (!date) return "—";
+  const d = new Date(date + "T12:00:00");
+  return Number.isNaN(d.getTime())
+    ? date
+    : d.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      });
+};
+
+const escapeHTML = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+
+function loadDB() {
   try {
-    const d = JSON.parse(localStorage.getItem(DB_KEY) || "{}");
+    const saved = localStorage.getItem(DB_KEY);
+    if (!saved) {
+      return {
+        accounts: {},
+        records: {},
+        drafts: {},
+        prefs: { globalTheme: "light" }
+      };
+    }
+
+    const parsed = JSON.parse(saved);
+
     return {
-      users: Array.isArray(d.users) ? d.users : [],
-      records: d.records && typeof d.records === "object" ? d.records : {},
-      prefs: d.prefs && typeof d.prefs === "object" ? d.prefs : {}
+      accounts: parsed.accounts || {},
+      records: parsed.records || {},
+      drafts: parsed.drafts || {},
+      prefs: parsed.prefs || { globalTheme: "light" }
     };
-  } catch {
-    return { users:[], records:{}, prefs:{} };
+  } catch (error) {
+    console.error("Could not load database:", error);
+    return {
+      accounts: {},
+      records: {},
+      drafts: {},
+      prefs: { globalTheme: "light" }
+    };
   }
 }
-function writeDB(db) {
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
+
+let db = loadDB();
+let currentUserId = null;
+let recoveryUserId = null;
+let toastTimer = null;
+
+function writeDB() {
+  try {
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+    return true;
+  } catch (error) {
+    console.error("Could not save database:", error);
+    showToast("Storage is full or unavailable. Export your data if possible.");
+    return false;
+  }
 }
-async function hash(text) {
-  const result = await crypto.subtle.digest(
-    "SHA-256", new TextEncoder().encode(text)
-  );
-  return [...new Uint8Array(result)]
-    .map(b => b.toString(16).padStart(2,"0")).join("");
+
+async function sha256(value) {
+  if (!window.crypto?.subtle) {
+    throw new Error("Secure hashing is unavailable. Open this app using localhost or HTTPS.");
+  }
+
+  const bytes = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+
+  return Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
-async function pinTag(pin) {
-  return hash("expenseflow-unique-pin:"+pin);
-}
-async function secretHash(value, salt) {
-  return hash(salt+":"+value);
-}
-function user() {
-  return readDB().users.find(u => u.id === state.userId);
-}
-function userRecords() {
-  return readDB().records[state.userId] || {};
-}
-function recordFor(date) {
-  return userRecords()[date] || {
-    date, entries:[], draft:null
+
+async function hashPIN(pin) {
+  const salt = makeId();
+  return {
+    salt,
+    hash: await sha256(salt + ":" + pin)
   };
 }
-function allEntries() {
-  const records = userRecords();
-  return Object.values(records)
-    .flatMap(r => (r.entries || []).map(e => ({
-      ...e, bucketDate:r.date
-    })))
-    .sort((a,b) => (b.date||"").localeCompare(a.date||"") ||
-      (b.updatedAt||0)-(a.updatedAt||0));
-}
-function saveRecord(date, record) {
-  const db = readDB();
-  db.records[state.userId] ||= {};
-  db.records[state.userId][date] = record;
-  writeDB(db);
-}
-function toast(message) {
-  const el = $("toast");
-  el.textContent = message;
-  el.classList.add("show");
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove("show"), 2800);
-}
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, c => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;",
-    '"':"&quot;", "'":"&#39;"
-  }[c]));
+
+async function pinTag(pin) {
+  // Used to check whether a PIN is already registered in this browser.
+  return sha256("expenseflow-pin-index:" + pin);
 }
 
-/* Authentication screens */
-function showAuth(which) {
-  ["loginForm","registerForm","forgotForm","resetForm"].forEach(form => {
-    $(form).classList.toggle("hidden", form !== which);
-  });
-  $("loginTab").classList.toggle("active", which === "loginForm");
-  $("registerTab").classList.toggle("active", which === "registerForm");
-  $("loginTab").classList.toggle("hidden", ["forgotForm","resetForm"].includes(which));
-  $("registerTab").classList.toggle("hidden", ["forgotForm","resetForm"].includes(which));
-}
-function setTheme(theme, save = true) {
-  state.theme = theme === "dark" ? "dark" : "light";
-  document.documentElement.dataset.theme = state.theme;
-  document.querySelector('meta[name="theme-color"]').content =
-    state.theme === "dark" ? "#191c29" : "#6658e8";
-  $("authTheme").textContent = state.theme === "dark" ? "☀" : "◐";
-  $("mobileTheme").textContent = state.theme === "dark" ? "☀" : "◐";
-  $("themeBtn").innerHTML = state.theme === "dark"
-    ? '☀ <span>Light theme</span>'
-    : '◐ <span>Dark theme</span>';
+function showToast(message) {
+  const toast = $("toast");
+  if (!toast) return;
 
-  if (save) {
-    const db = readDB();
-    if (state.userId) {
-      db.prefs[state.userId] ||= {};
-      db.prefs[state.userId].theme = state.theme;
-    } else {
-      db.prefs.globalTheme = state.theme;
-    }
-    writeDB(db);
+  toast.textContent = message;
+  toast.classList.add("show");
+
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.classList.remove("show");
+  }, 3000);
+}
+
+function showAuthForm(formId) {
+  ["loginForm", "registerForm", "forgotForm", "resetForm"]
+    .forEach((id) => $(id).classList.toggle("hidden", id !== formId));
+}
+
+function showAuthPage() {
+  $("authPage").classList.remove("hidden");
+  $("appPage").classList.add("hidden");
+  currentUserId = null;
+  recoveryUserId = null;
+  showAuthForm("loginForm");
+  $("loginPin").value = "";
+}
+
+function setTheme(theme, persist = true) {
+  const selected = theme === "dark" ? "dark" : "light";
+
+  document.body.classList.toggle("dark", selected === "dark");
+
+  if (persist && currentUserId) {
+    db.prefs[currentUserId] = {
+      ...(db.prefs[currentUserId] || {}),
+      theme: selected
+    };
+    writeDB();
+  } else if (persist) {
+    db.prefs.globalTheme = selected;
+    writeDB();
   }
 }
+
 function toggleTheme() {
-  setTheme(state.theme === "dark" ? "light" : "dark");
+  const darkNow = document.body.classList.contains("dark");
+  setTheme(darkNow ? "light" : "dark");
 }
+
 function enterApp(account) {
-  state.userId = account.id;
-  const db = readDB();
-  setTheme(db.prefs[account.id]?.theme || db.prefs.globalTheme || "light", false);
-  $("auth").classList.add("hidden");
-  $("app").classList.remove("hidden");
+  currentUserId = account.id;
+
+  $("authPage").classList.add("hidden");
+  $("appPage").classList.remove("hidden");
+
   $("userName").textContent = account.name;
-  $("avatar").textContent = account.name.charAt(0).toUpperCase();
-  $("welcome").textContent = `Good to see you, ${account.name.split(/\s+/)[0]}.`;
-  $("selectedDate").value = today();
-  $("entryDate").value = today();
-  $("reportMonth").value = currentMonth();
+  $("welcomeName").textContent = account.name;
+  $("userAvatar").textContent =
+    (account.name.trim()[0] || "U").toUpperCase();
+
+  const theme =
+    db.prefs[currentUserId]?.theme ||
+    db.prefs.globalTheme ||
+    "light";
+
+  setTheme(theme, false);
+
+  if (!Array.isArray(db.records[currentUserId])) {
+    db.records[currentUserId] = [];
+  }
+
+  if (!db.drafts[currentUserId]) {
+    db.drafts[currentUserId] = {};
+  }
+
+  $("entryDate").value = todayISO();
+  $("todayLabel").textContent = new Date().toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+
   showPage("overview");
   renderAll();
 }
-function logout() {
-  state.userId = null;
-  $("app").classList.add("hidden");
-  $("auth").classList.remove("hidden");
-  $("loginPin").value = "";
-  $("entryForm").reset();
-  showAuth("loginForm");
-}
 
-/* Registration: name + unique PIN + birth date */
-$("registerForm").addEventListener("submit", async event => {
-  event.preventDefault();
-  const name = cleanName($("regName").value);
-  const pin = $("regPin").value;
-  const confirmPin = $("regPin2").value;
-  const dob = $("regDob").value;
+/* =========================================
+   Registration
+========================================= */
 
-  if (name.length < 2) return toast("Please enter your full name.");
-  if (!/^\d{5}$/.test(pin)) return toast("PIN must be exactly 5 digits.");
-  if (pin !== confirmPin) return toast("PINs do not match.");
-  if (!dob || dob >= today()) return toast("Enter a valid past date of birth.");
-
-  const db = readDB();
-  const tag = await pinTag(pin);
-  if (db.users.some(u => u.pinTag === tag)) {
-    return toast("This PIN is already used. Please choose another.");
-  }
-
-  const salt = id();
-  const account = {
-    id:id(),
-    name,
-    dobHash:await secretHash(dob, salt),
-    salt,
-    pinHash:await secretHash(pin, salt),
-    pinTag:tag,
-    createdAt:Date.now()
-  };
-
-  db.users.push(account);
-  db.records[account.id] = {};
-  db.prefs[account.id] = {theme:db.prefs.globalTheme || "light"};
-  writeDB(db);
-  enterApp(account);
-  toast("Account created successfully.");
+$("showRegister").addEventListener("click", () => {
+  showAuthForm("registerForm");
 });
 
-/* Login: PIN only */
-$("loginForm").addEventListener("submit", async event => {
-  event.preventDefault();
-  const pin = $("loginPin").value;
-  if (!/^\d{5}$/.test(pin)) return toast("Enter your 5-digit PIN.");
-
-  const db = readDB();
-  const tag = await pinTag(pin);
-  const account = db.users.find(u => u.pinTag === tag);
-  if (!account) return toast("PIN not found. Try Forgot PIN.");
-
-  if (await secretHash(pin, account.salt) !== account.pinHash) {
-    return toast("Incorrect PIN.");
-  }
-
-  enterApp(account);
-  toast("Welcome back, "+account.name.split(/\s+/)[0]+".");
+$("showForgot").addEventListener("click", () => {
+  showAuthForm("forgotForm");
 });
 
-/* Forgot PIN: name + DOB */
-$("forgotForm").addEventListener("submit", async event => {
-  event.preventDefault();
-  const name = normalizedName($("forgotName").value);
-  const dob = $("forgotDob").value;
-  const accounts = readDB().users.filter(u => normalizedName(u.name) === name);
-  let match = null;
+["backToLogin1", "backToLogin2", "backToLogin3"].forEach((id) => {
+  $(id).addEventListener("click", () => showAuthForm("loginForm"));
+});
 
-  for (const account of accounts) {
-    if (await secretHash(dob, account.salt) === account.dobHash) {
-      match = account;
-      break;
+$("registerForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const name = $("registerName").value.trim();
+  const pin = $("registerPin").value.trim();
+  const confirm = $("confirmPin").value.trim();
+  const dob = $("registerDob").value;
+
+  if (name.length < 2) {
+    showToast("Please enter your full name.");
+    return;
+  }
+
+  if (!/^\d{5}$/.test(pin)) {
+    showToast("PIN must contain exactly 5 digits.");
+    return;
+  }
+
+  if (pin !== confirm) {
+    showToast("PINs do not match.");
+    return;
+  }
+
+  if (!dob || dob > todayISO()) {
+    showToast("Please enter a valid date of birth.");
+    return;
+  }
+
+  try {
+    const tag = await pinTag(pin);
+
+    const duplicate = Object.values(db.accounts).some(
+      (account) => account.pinTag === tag
+    );
+
+    if (duplicate) {
+      showToast("This PIN is already in use. Choose another PIN.");
+      return;
     }
-  }
 
-  if (!match) {
-    return toast("Name or date of birth could not be verified.");
-  }
+    const id = makeId();
+    const pinData = await hashPIN(pin);
+    const dobHash = await sha256("expenseflow-dob:" + dob);
 
-  state.resetUserId = match.id;
-  $("resetInfo").textContent =
-    `Identity verified for ${match.name}. Choose a new unique PIN.`;
-  showAuth("resetForm");
+    db.accounts[id] = {
+      id,
+      name,
+      pinTag: tag,
+      pinSalt: pinData.salt,
+      pinHash: pinData.hash,
+      dobHash,
+      createdAt: new Date().toISOString()
+    };
+
+    db.records[id] = [];
+    db.drafts[id] = {};
+
+    if (!writeDB()) {
+      delete db.accounts[id];
+      delete db.records[id];
+      delete db.drafts[id];
+      return;
+    }
+
+    $("registerForm").reset();
+    showToast("Account created successfully.");
+    enterApp(db.accounts[id]);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Could not create account.");
+  }
 });
 
-/* Reset PIN; uniqueness is checked again */
-$("resetForm").addEventListener("submit", async event => {
+/* =========================================
+   Login: PIN only
+========================================= */
+
+$("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const pin = $("newPin").value;
-  const confirmPin = $("newPin2").value;
 
-  if (!/^\d{5}$/.test(pin)) return toast("PIN must be exactly 5 digits.");
-  if (pin !== confirmPin) return toast("PINs do not match.");
+  const pin = $("loginPin").value.trim();
 
-  const db = readDB();
-  const account = db.users.find(u => u.id === state.resetUserId);
-  if (!account) return toast("Recovery expired. Start again.");
-
-  const tag = await pinTag(pin);
-  if (db.users.some(u => u.id !== account.id && u.pinTag === tag)) {
-    return toast("That PIN is already in use. Choose another.");
+  if (!/^\d{5}$/.test(pin)) {
+    showToast("Enter your 5-digit PIN.");
+    return;
   }
 
-  account.pinTag = tag;
-  account.pinHash = await secretHash(pin, account.salt);
-  writeDB(db);
+  try {
+    const tag = await pinTag(pin);
 
-  state.resetUserId = null;
-  $("resetForm").reset();
-  $("loginPin").value = "";
-  showAuth("loginForm");
-  toast("PIN reset successfully. Login with your new PIN.");
+    const account = Object.values(db.accounts).find(
+      (item) => item.pinTag === tag
+    );
+
+    if (!account) {
+      showToast("Account not found. Check your PIN or register.");
+      return;
+    }
+
+    const attemptedHash = await sha256(account.pinSalt + ":" + pin);
+
+    if (attemptedHash !== account.pinHash) {
+      showToast("Incorrect PIN.");
+      return;
+    }
+
+    $("loginForm").reset();
+    enterApp(account);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Login failed.");
+  }
 });
 
-/* Navigation and theme */
+/* =========================================
+   PIN recovery
+========================================= */
+
+$("forgotForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const name = $("forgotName").value.trim().toLowerCase();
+  const dob = $("forgotDob").value;
+
+  if (!name || !dob) {
+    showToast("Enter your name and date of birth.");
+    return;
+  }
+
+  try {
+    const dobHash = await sha256("expenseflow-dob:" + dob);
+
+    const account = Object.values(db.accounts).find((item) =>
+      item.name.trim().toLowerCase() === name &&
+      item.dobHash === dobHash
+    );
+
+    if (!account) {
+      showToast("Details do not match an account.");
+      return;
+    }
+
+    recoveryUserId = account.id;
+    $("forgotForm").reset();
+    showAuthForm("resetForm");
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Could not verify details.");
+  }
+});
+
+$("resetForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (!recoveryUserId || !db.accounts[recoveryUserId]) {
+    showToast("Please verify your account again.");
+    showAuthForm("forgotForm");
+    return;
+  }
+
+  const pin = $("resetPin").value.trim();
+  const confirm = $("resetPinConfirm").value.trim();
+
+  if (!/^\d{5}$/.test(pin)) {
+    showToast("New PIN must contain exactly 5 digits.");
+    return;
+  }
+
+  if (pin !== confirm) {
+    showToast("PINs do not match.");
+    return;
+  }
+
+  try {
+    const tag = await pinTag(pin);
+
+    const duplicate = Object.values(db.accounts).some(
+      (account) => account.id !== recoveryUserId &&
+        account.pinTag === tag
+    );
+
+    if (duplicate) {
+      showToast("That PIN belongs to another account. Choose another.");
+      return;
+    }
+
+    const oldAccount = { ...db.accounts[recoveryUserId] };
+    const pinData = await hashPIN(pin);
+
+    db.accounts[recoveryUserId].pinTag = tag;
+    db.accounts[recoveryUserId].pinSalt = pinData.salt;
+    db.accounts[recoveryUserId].pinHash = pinData.hash;
+
+    if (!writeDB()) {
+      db.accounts[recoveryUserId] = oldAccount;
+      return;
+    }
+
+    recoveryUserId = null;
+    $("resetForm").reset();
+    showAuthForm("loginForm");
+    showToast("PIN reset successfully. Please log in.");
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Could not reset PIN.");
+  }
+});
+
+/* =========================================
+   Navigation
+========================================= */
+
+const pageTitles = {
+  overview: "Overview",
+  transactions: "Transactions",
+  reports: "Reports"
+};
+
 function showPage(page) {
-  state.page = page;
-  ["overview","transactions","reports"].forEach(p => {
-    $(p+"Page").classList.toggle("hidden", p !== page);
+  if (!pageTitles[page]) page = "overview";
+
+  Object.keys(pageTitles).forEach((key) => {
+    $(key + "Page").classList.toggle("hidden", key !== page);
   });
-  document.querySelectorAll("[data-page]").forEach(button => {
+
+  document.querySelectorAll(".nav-link[data-page]").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === page);
   });
-  $("pageTitle").textContent =
-    page === "overview" ? "Overview" :
-    page === "transactions" ? "Transactions" : "Reports";
 
-  if (page === "transactions") renderAllTransactions();
-  if (page === "reports") renderReports();
-  window.scrollTo({top:0,behavior:"smooth"});
+  $("pageTitle").textContent = pageTitles[page];
 }
-document.querySelectorAll("[data-page]").forEach(button =>
-  button.addEventListener("click", () => showPage(button.dataset.page))
-);
-document.querySelectorAll("[data-go]").forEach(button =>
-  button.addEventListener("click", () => showPage(button.dataset.go))
-);
-$("loginTab").addEventListener("click", () => showAuth("loginForm"));
-$("registerTab").addEventListener("click", () => showAuth("registerForm"));
-$("forgotBtn").addEventListener("click", () => showAuth("forgotForm"));
-$("backLogin").addEventListener("click", () => showAuth("loginForm"));
-$("cancelReset").addEventListener("click", () => {
-  state.resetUserId = null;
-  showAuth("loginForm");
-});
-["authTheme","themeBtn","mobileTheme"].forEach(id =>
-  $(id).addEventListener("click", toggleTheme)
-);
-$("logoutBtn").addEventListener("click", () => {
-  if (confirm("Log out? Your saved data will remain in this browser.")) logout();
+
+document.querySelectorAll(".nav-link[data-page]").forEach((button) => {
+  button.addEventListener("click", () => {
+    showPage(button.dataset.page);
+    renderAll();
+  });
 });
 
-/* Entry form */
+document.querySelectorAll("[data-goto]").forEach((button) => {
+  button.addEventListener("click", () => {
+    showPage(button.dataset.goto);
+    renderAll();
+  });
+});
+
+$("brandHome").addEventListener("click", (event) => {
+  event.preventDefault();
+  showPage("overview");
+  renderAll();
+});
+
+$("quickAddBtn").addEventListener("click", () => {
+  showPage("transactions");
+  resetEntryForm();
+  $("entryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("entryTitle").focus({ preventScroll: true });
+});
+
+$("themeBtn").addEventListener("click", toggleTheme);
+$("mobileThemeBtn").addEventListener("click", toggleTheme);
+
+$("logoutBtn").addEventListener("click", () => {
+  if (!currentUserId) return;
+  currentUserId = null;
+  showAuthPage();
+  showToast("You have been logged out.");
+});
+
+/* =========================================
+   Transaction data
+========================================= */
+
+function getTransactions() {
+  if (!currentUserId) return [];
+
+  if (!Array.isArray(db.records[currentUserId])) {
+    db.records[currentUserId] = [];
+  }
+
+  return db.records[currentUserId];
+}
+
+function saveDraftForDate() {
+  if (!currentUserId) return false;
+
+  const date = $("entryDate").value || todayISO();
+
+  if (!db.drafts[currentUserId]) {
+    db.drafts[currentUserId] = {};
+  }
+
+  db.drafts[currentUserId][date] = {
+    date,
+    type: $("entryType").value,
+    category: $("entryCategory").value,
+    amount: $("entryAmount").value,
+    title: $("entryTitle").value,
+    note: $("entryNote").value,
+    updatedAt: new Date().toISOString()
+  };
+
+  return writeDB();
+}
+
+function loadDraftForDate(date) {
+  if (!currentUserId) return;
+
+  const draft = db.drafts[currentUserId]?.[date];
+  if (!draft) return;
+
+  $("entryType").value = draft.type || "expense";
+  $("entryCategory").value = draft.category || "Other";
+  $("entryAmount").value = draft.amount || "";
+  $("entryTitle").value = draft.title || "";
+  $("entryNote").value = draft.note || "";
+}
+
 function resetEntryForm() {
   $("entryForm").reset();
-  $("editId").value = "";
-  $("entryDate").value = $("selectedDate").value || today();
-  $("entryType").value = "expense";
-  $("entryCategory").value = "Food";
-  $("cancelEdit").classList.add("hidden");
+  $("editTransactionId").value = "";
+  $("entryDate").value = todayISO();
+  $("entryHeading").textContent = "Daily transaction";
+  $("saveEntryBtn").textContent = "Save transaction";
+  $("cancelEditBtn").classList.add("hidden");
+  $("entryMessage").textContent = "";
+  $("entryMessage").classList.remove("error");
 }
-$("addBtn").addEventListener("click", () => {
-  $("entryTitle").focus();
-  $("entryForm").scrollIntoView({behavior:"smooth",block:"center"});
-});
-$("cancelEdit").addEventListener("click", resetEntryForm);
-$("selectedDate").addEventListener("change", () => {
-  resetEntryForm();
-  renderAll();
+
+$("entryDate").addEventListener("change", () => {
+  const date = $("entryDate").value;
+  if (date && !$("editTransactionId").value) {
+    loadDraftForDate(date);
+  }
 });
 
-$("entryForm").addEventListener("submit", event => {
+$("draftBtn").addEventListener("click", () => {
+  if (!currentUserId) {
+    showToast("Please log in first.");
+    return;
+  }
+
+  if (!$("entryDate").value) {
+    showToast("Choose a date for this draft.");
+    return;
+  }
+
+  if (saveDraftForDate()) {
+    $("entryMessage").textContent = "Draft saved. You can return to it later.";
+    $("entryMessage").classList.remove("error");
+    showToast("Draft saved successfully.");
+  }
+});
+
+/*
+  IMPORTANT ENTRY FIX:
+  This one submit handler handles both adding and editing.
+  All form IDs below exist in index.html.
+*/
+$("entryForm").addEventListener("submit", (event) => {
   event.preventDefault();
 
-  const editId = $("editId").value;
+  if (!currentUserId || !db.accounts[currentUserId]) {
+    showToast("Your session ended. Please log in again.");
+    showAuthPage();
+    return;
+  }
+
   const date = $("entryDate").value;
+  const type = $("entryType").value;
+  const category = $("entryCategory").value;
   const amount = Number($("entryAmount").value);
   const title = $("entryTitle").value.trim();
+  const note = $("entryNote").value.trim();
+  const editId = $("editTransactionId").value;
 
-  if (!date) return toast("Choose a transaction date.");
-  if (!title) return toast("Enter a description.");
+  if (!date) {
+    showToast("Please choose the transaction date.");
+    $("entryDate").focus();
+    return;
+  }
+
+  if (!["expense", "income"].includes(type)) {
+    showToast("Please choose a valid transaction type.");
+    return;
+  }
+
   if (!Number.isFinite(amount) || amount <= 0) {
-    return toast("Enter an amount greater than zero.");
+    showToast("Enter an amount greater than zero.");
+    $("entryAmount").focus();
+    return;
   }
 
-  const entry = {
-    id:editId || id(),
-    type:$("entryType").value,
-    title,
-    amount,
-    category:$("entryCategory").value,
+  if (!title) {
+    showToast("Please enter a description.");
+    $("entryTitle").focus();
+    return;
+  }
+
+  const transactions = getTransactions();
+  const oldTransaction = editId
+    ? transactions.find((item) => item.id === editId)
+    : null;
+
+  if (editId && !oldTransaction) {
+    showToast("Transaction not found. Please refresh and try again.");
+    resetEntryForm();
+    return;
+  }
+
+  const transaction = {
+    id: editId || makeId(),
     date,
-    note:$("entryNote").value.trim(),
-    updatedAt:Date.now()
+    type,
+    category,
+    amount,
+    title,
+    note,
+    createdAt: oldTransaction?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
 
-  const db = readDB();
-  db.records[state.userId] ||= {};
+  const previousRecords = transactions.map((item) => ({ ...item }));
 
-  // Editing removes the old copy from whichever day contains it.
   if (editId) {
-    for (const bucketDate of Object.keys(db.records[state.userId])) {
-      const record = db.records[state.userId][bucketDate];
-      record.entries = (record.entries || []).filter(e => e.id !== editId);
-    }
+    const index = transactions.findIndex((item) => item.id === editId);
+    transactions[index] = transaction;
+  } else {
+    transactions.push(transaction);
   }
 
-  const record = db.records[state.userId][date] || {
-    date, entries:[], draft:null
-  };
-  record.entries ||= [];
-  record.entries.push(entry);
-  record.date = date;
-  record.updatedAt = Date.now();
-  db.records[state.userId][date] = record;
-  writeDB(db);
+  transactions.sort((a, b) =>
+    b.date.localeCompare(a.date) ||
+    String(b.createdAt).localeCompare(String(a.createdAt))
+  );
 
-  $("selectedDate").value = date;
+  if (!writeDB()) {
+    db.records[currentUserId] = previousRecords;
+    return;
+  }
+
+  // A successfully saved transaction supersedes its same-day draft.
+  if (db.drafts[currentUserId]) {
+    delete db.drafts[currentUserId][date];
+    writeDB();
+  }
+
   resetEntryForm();
   renderAll();
-  $("saveStatus").textContent = "Saved just now";
-  toast(editId ? "Transaction updated." : "Transaction saved.");
+
+  $("entryMessage").textContent = editId
+    ? "Transaction updated successfully."
+    : "Transaction saved successfully.";
+
+  showToast(editId ? "Transaction updated." : "Transaction saved.");
 });
 
-function editEntry(entryId) {
-  const entry = allEntries().find(e => e.id === entryId);
-  if (!entry) return;
+$("entryForm").addEventListener("reset", () => {
+  // reset event fires before the browser has reset field values.
+  setTimeout(() => {
+    if (!$("editTransactionId").value) {
+      $("entryDate").value = todayISO();
+      $("entryHeading").textContent = "Daily transaction";
+      $("saveEntryBtn").textContent = "Save transaction";
+      $("cancelEditBtn").classList.add("hidden");
+    }
+  }, 0);
+});
 
-  $("selectedDate").value = entry.bucketDate || entry.date;
-  $("editId").value = entry.id;
-  $("entryType").value = entry.type;
-  $("entryTitle").value = entry.title;
-  $("entryAmount").value = entry.amount;
-  $("entryCategory").value = entry.category;
-  $("entryDate").value = entry.date;
-  $("entryNote").value = entry.note || "";
-  $("cancelEdit").classList.remove("hidden");
+$("cancelEditBtn").addEventListener("click", resetEntryForm);
+$("clearEntryBtn").addEventListener("click", () => {
+  $("entryMessage").textContent = "";
+  $("entryMessage").classList.remove("error");
+});
 
-  showPage("overview");
-  renderOverview();
-  $("entryTitle").focus();
-}
-function deleteEntry(entryId) {
-  if (!confirm("Delete this transaction? This cannot be undone.")) return;
-  const db = readDB();
-  for (const record of Object.values(db.records[state.userId] || {})) {
-    record.entries = (record.entries || []).filter(e => e.id !== entryId);
+/* =========================================
+   Edit and delete
+========================================= */
+
+function editTransaction(id) {
+  const transaction = getTransactions().find((item) => item.id === id);
+  if (!transaction) {
+    showToast("Transaction not found.");
+    return;
   }
-  writeDB(db);
-  renderAll();
-  toast("Transaction deleted.");
-}
-function handleEntryClick(event) {
-  const edit = event.target.closest("[data-edit]");
-  const del = event.target.closest("[data-delete]");
-  if (edit) editEntry(edit.dataset.edit);
-  if (del) deleteEntry(del.dataset.delete);
-}
-$("dayBody").addEventListener("click", handleEntryClick);
-$("allBody").addEventListener("click", handleEntryClick);
 
-/* Rendering */
-function rowHTML(e, dayMode = false) {
-  const symbol = e.type === "income" ? "↗" : "•";
-  return `<tr>
-    <td><div class="tx-name"><span class="tx-icon">${symbol}</span>
-      <div><strong>${escapeHTML(e.title)}</strong>
-      <small>${escapeHTML(e.note || e.type)}</small></div></div></td>
-    <td><span class="category-chip">${escapeHTML(e.category)}</span></td>
-    <td>${escapeHTML(e.date)}</td>
-    ${dayMode ? "" : `<td>${e.type === "income" ? "Income" : "Expense"}</td>`}
-    <td class="amount ${e.type}">${e.type === "income" ? "+" : "−"}${money(e.amount)}</td>
-    <td><div class="row-actions">
-      <button class="mini-btn" data-edit="${escapeHTML(e.id)}">Edit</button>
-      <button class="mini-btn" data-delete="${escapeHTML(e.id)}">Delete</button>
-    </div></td>
-  </tr>`;
+  showPage("transactions");
+
+  $("editTransactionId").value = transaction.id;
+  $("entryDate").value = transaction.date;
+  $("entryType").value = transaction.type;
+  $("entryCategory").value = transaction.category;
+  $("entryAmount").value = transaction.amount;
+  $("entryTitle").value = transaction.title;
+  $("entryNote").value = transaction.note || "";
+
+  $("entryHeading").textContent = "Edit transaction";
+  $("saveEntryBtn").textContent = "Update transaction";
+  $("cancelEditBtn").classList.remove("hidden");
+
+  $("entryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
+function deleteTransaction(id) {
+  const transaction = getTransactions().find((item) => item.id === id);
+  if (!transaction) return;
+
+  if (!confirm(`Delete "${transaction.title}" (${money(transaction.amount)})?`)) {
+    return;
+  }
+
+  const oldRecords = getTransactions().map((item) => ({ ...item }));
+  db.records[currentUserId] = oldRecords.filter((item) => item.id !== id);
+
+  if (!writeDB()) {
+    db.records[currentUserId] = oldRecords;
+    return;
+  }
+
+  if ($("editTransactionId").value === id) {
+    resetEntryForm();
+  }
+
+  renderAll();
+  showToast("Transaction deleted.");
+}
+
+/* =========================================
+   Filtering and rendering
+========================================= */
+
+$("filterDate").addEventListener("change", renderTransactionTable);
+$("filterType").addEventListener("change", renderTransactionTable);
+
+$("clearFiltersBtn").addEventListener("click", () => {
+  $("filterDate").value = "";
+  $("filterType").value = "all";
+  renderTransactionTable();
+});
+
+function getFilteredTransactions() {
+  const filterDate = $("filterDate").value;
+  const filterType = $("filterType").value;
+
+  return getTransactions().filter((transaction) => {
+    const dateMatches = !filterDate || transaction.date === filterDate;
+    const typeMatches = filterType === "all" || transaction.type === filterType;
+    return dateMatches && typeMatches;
+  });
+}
+
+const categoryIcons = {
+  Food: "🍽️",
+  Travel: "🚕",
+  Shopping: "🛍️",
+  Bills: "🧾",
+  Health: "💊",
+  Education: "📚",
+  Salary: "💰",
+  Business: "💼",
+  Home: "🏠",
+  Entertainment: "🎬",
+  Other: "📌"
+};
+
+function transactionItemHTML(transaction) {
+  const isIncome = transaction.type === "income";
+
+  return `
+    <div class="transaction-item">
+      <div class="category-icon">${categoryIcons[transaction.category] || "📌"}</div>
+      <div class="transaction-info">
+        <strong>${escapeHTML(transaction.title)}</strong>
+        <small>${escapeHTML(transaction.category)} · ${prettyDate(transaction.date)}</small>
+      </div>
+      <div class="transaction-amount ${isIncome ? "income-text" : "expense-text"}">
+        ${isIncome ? "+" : "−"}${money(transaction.amount)}
+      </div>
+    </div>
+  `;
+}
+
+function renderTransactionTable() {
+  const wrap = $("transactionTableWrap");
+  const transactions = getFilteredTransactions();
+
+  if (!transactions.length) {
+    wrap.innerHTML = `<div class="empty-state">No transactions found. Add your first entry above.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${transactions.map((transaction) => `
+          <tr>
+            <td>${prettyDate(transaction.date)}</td>
+            <td class="table-description">
+              <strong>${escapeHTML(transaction.title)}</strong>
+              ${transaction.note
+                ? `<small>${escapeHTML(transaction.note)}</small>`
+                : ""}
+            </td>
+            <td>${escapeHTML(transaction.category)}</td>
+            <td>
+              <span class="type-pill ${transaction.type}">
+                ${transaction.type === "income" ? "Income" : "Expense"}
+              </span>
+            </td>
+            <td class="${transaction.type === "income" ? "income-text" : "expense-text"}">
+              ${money(transaction.amount)}
+            </td>
+            <td>
+              <div class="row-actions">
+                <button class="small-btn" data-action="edit"
+                  data-id="${escapeHTML(transaction.id)}">Edit</button>
+                <button class="small-btn delete" data-action="delete"
+                  data-id="${escapeHTML(transaction.id)}">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+
+  wrap.querySelectorAll("button[data-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const { action, id } = button.dataset;
+      if (action === "edit") editTransaction(id);
+      if (action === "delete") deleteTransaction(id);
+    });
+  });
+}
+
 function renderOverview() {
-  const date = $("selectedDate").value || today();
-  const record = recordFor(date);
-  const entries = record.entries || [];
-  const income = entries.filter(e => e.type === "income")
-    .reduce((sum,e) => sum + Number(e.amount), 0);
-  const expenses = entries.filter(e => e.type === "expense")
-    .reduce((sum,e) => sum + Number(e.amount), 0);
+  const transactions = getTransactions();
+  const today = todayISO();
+  const monthPrefix = today.slice(0, 7);
 
-  $("incomeTotal").textContent = money(income);
-  $("expenseTotal").textContent = money(expenses);
-  $("balanceTotal").textContent = money(income-expenses);
-  $("entryTotal").textContent = entries.length;
-  $("dayBody").innerHTML = entries.slice()
-    .sort((a,b) => (b.updatedAt||0)-(a.updatedAt||0))
-    .map(e => rowHTML(e,true)).join("");
-  $("dayEmpty").classList.toggle("hidden", entries.length > 0);
-  $("dayBody").parentElement.classList.toggle("hidden", entries.length === 0);
+  const todayItems = transactions.filter((item) => item.date === today);
+  const monthItems = transactions.filter((item) => item.date.startsWith(monthPrefix));
 
-  const recent = allEntries().slice(0,6);
-  $("recentList").innerHTML = recent.length ? recent.map(e => `
-    <div class="recent-item">
-      <div class="tx-name"><span class="tx-icon">${e.type==="income"?"↗":"•"}</span>
-        <div><strong>${escapeHTML(e.title)}</strong>
-        <small>${escapeHTML(e.date)} · ${escapeHTML(e.category)}</small></div>
-      </div>
-      <span class="amount ${e.type}">${e.type==="income"?"+":"−"}${money(e.amount)}</span>
-    </div>`).join("") : `<p class="empty">Your latest transactions will appear here.</p>`;
+  const sum = (items, type) => items
+    .filter((item) => item.type === type)
+    .reduce((total, item) => total + Number(item.amount || 0), 0);
+
+  const allIncome = sum(transactions, "income");
+  const allExpense = sum(transactions, "expense");
+
+  $("todayExpense").textContent = money(sum(todayItems, "expense"));
+  $("todayIncome").textContent = money(sum(todayItems, "income"));
+  $("monthExpense").textContent = money(sum(monthItems, "expense"));
+  $("netBalance").textContent = money(allIncome - allExpense);
+
+  const recent = [...transactions]
+    .sort((a, b) =>
+      b.date.localeCompare(a.date) ||
+      String(b.createdAt).localeCompare(String(a.createdAt))
+    )
+    .slice(0, 6);
+
+  $("recentTransactions").innerHTML = recent.length
+    ? recent.map(transactionItemHTML).join("")
+    : `<div class="empty-state">No transactions yet. Use “Add transaction” to get started.</div>`;
+
+  const categoryTotals = {};
+
+  monthItems
+    .filter((item) => item.type === "expense")
+    .forEach((item) => {
+      categoryTotals[item.category] =
+        (categoryTotals[item.category] || 0) + Number(item.amount || 0);
+    });
+
+  const sortedCategories = Object.entries(categoryTotals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  const highest = sortedCategories[0]?.[1] || 1;
+
+  $("overviewInsights").innerHTML = sortedCategories.length
+    ? sortedCategories.map(([category, amount]) => `
+        <div>
+          <div class="insight-row">
+            <span>${categoryIcons[category] || "📌"} ${escapeHTML(category)}</span>
+            <strong>${money(amount)}</strong>
+          </div>
+          <div class="insight-track">
+            <div class="insight-fill" style="width:${Math.max(3, amount / highest * 100)}%"></div>
+          </div>
+        </div>
+      `).join("")
+    : `<div class="empty-state">Your category insights will appear after you add expenses.</div>`;
 }
-function renderAllTransactions() {
-  const q = $("searchBox").value.trim().toLowerCase();
-  const type = $("typeFilter").value;
-  const category = $("categoryFilter").value;
-  const entries = allEntries().filter(e =>
-    (!q || `${e.title} ${e.note||""} ${e.category}`.toLowerCase().includes(q)) &&
-    (type === "all" || e.type === type) &&
-    (category === "all" || e.category === category)
-  );
-  $("allBody").innerHTML = entries.map(e => rowHTML(e,false)).join("");
-  $("allEmpty").classList.toggle("hidden", entries.length > 0);
-  $("allBody").parentElement.classList.toggle("hidden", entries.length === 0);
-}
+
 function renderReports() {
-  const month = $("reportMonth").value || currentMonth();
-  const entries = allEntries().filter(e => (e.date||"").startsWith(month));
-  const income = entries.filter(e => e.type === "income").reduce((s,e)=>s+Number(e.amount),0);
-  const expenses = entries.filter(e => e.type === "expense").reduce((s,e)=>s+Number(e.amount),0);
-  const days = new Set(entries.filter(e => e.type === "expense").map(e=>e.date)).size;
+  const transactions = getTransactions();
+  const income = transactions
+    .filter((item) => item.type === "income")
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  $("monthIncome").textContent = money(income);
-  $("monthExpense").textContent = money(expenses);
-  $("monthBalance").textContent = money(income-expenses);
-  $("monthAverage").textContent = money(days ? expenses/days : 0);
+  const expenses = transactions
+    .filter((item) => item.type === "expense")
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  const groups = {};
-  entries.filter(e => e.type === "expense").forEach(e => {
-    groups[e.category] = (groups[e.category] || 0) + Number(e.amount);
-  });
-  const max = Math.max(1,...Object.values(groups));
-  const sorted = Object.entries(groups).sort((a,b)=>b[1]-a[1]);
-  $("categoryReport").innerHTML = sorted.length ? sorted.map(([name,value]) => `
-    <div class="report-line">
-      <div class="report-line-head"><span>${escapeHTML(name)}</span><strong>${money(value)}</strong></div>
-      <div class="track"><div class="fill" style="width:${value/max*100}%"></div></div>
-    </div>`).join("") : `<p class="empty">No expenses for this month yet.</p>`;
+  $("reportIncome").textContent = money(income);
+  $("reportExpense").textContent = money(expenses);
+  $("reportNet").textContent = money(income - expenses);
+  $("reportCount").textContent = String(transactions.length);
 
-  const months = {};
-  allEntries().forEach(e => {
-    const m = (e.date||"").slice(0,7);
-    if (!m) return;
-    months[m] ||= {income:0,expense:0};
-    months[m][e.type] += Number(e.amount) || 0;
-  });
-  const recentMonths = Object.entries(months).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,6);
-  const maxMonth = Math.max(1,...recentMonths.flatMap(([,v])=>[v.income,v.expense]));
-  $("monthlyReport").innerHTML = recentMonths.length ? recentMonths.map(([m,v]) => `
-    <div class="month-row">
-      <strong>${escapeHTML(m)}</strong>
-      <div class="month-bars">
-        <div class="bar" style="width:${v.income/maxMonth*100}%"></div>
-        <div class="bar expense" style="width:${v.expense/maxMonth*100}%"></div>
-      </div>
-      <div class="month-values">+${money(v.income)}<br>−${money(v.expense)}</div>
-    </div>`).join("") : `<p class="empty">No monthly history yet.</p>`;
+  const totals = {};
+
+  transactions
+    .filter((item) => item.type === "expense")
+    .forEach((item) => {
+      totals[item.category] = (totals[item.category] || 0) + Number(item.amount || 0);
+    });
+
+  const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const max = sorted[0]?.[1] || 1;
+
+  $("categoryReport").innerHTML = sorted.length
+    ? sorted.map(([category, amount]) => `
+        <div class="category-report-row">
+          <div class="category-report-label">
+            <span>${categoryIcons[category] || "📌"} ${escapeHTML(category)}</span>
+            <span>${money(amount)}</span>
+          </div>
+          <div class="category-report-track">
+            <div class="category-report-fill"
+              style="width:${Math.max(2, amount / max * 100)}%"></div>
+          </div>
+        </div>
+      `).join("")
+    : `<div class="empty-state">No expense data to report yet.</div>`;
 }
+
 function renderAll() {
-  if (!state.userId) return;
+  if (!currentUserId) return;
   renderOverview();
-  if (state.page === "transactions") renderAllTransactions();
-  if (state.page === "reports") renderReports();
+  renderTransactionTable();
+  renderReports();
 }
 
-/* Draft saves a snapshot and ordinary saves preserve it. */
-$("draftBtn").addEventListener("click", () => {
-  const date = $("selectedDate").value;
-  const record = recordFor(date);
-  record.draft = {
-    entries:JSON.parse(JSON.stringify(record.entries||[])),
-    savedAt:Date.now()
-  };
-  record.updatedAt = Date.now();
-  saveRecord(date,record);
-  $("saveStatus").textContent = "Draft saved.";
-  toast("Draft saved for "+date+".");
-});
-$("restoreBtn").addEventListener("click", () => {
-  const date = $("selectedDate").value;
-  const record = recordFor(date);
-  if (!record.draft) return toast("No draft saved for this day.");
-  if (!confirm("Restore this draft? Current entries for this day will be replaced.")) return;
-  record.entries = JSON.parse(JSON.stringify(record.draft.entries||[]));
-  record.updatedAt = Date.now();
-  saveRecord(date,record);
-  renderAll();
-  $("saveStatus").textContent = "Draft restored.";
-  toast("Draft restored.");
-});
-$("saveDayBtn").addEventListener("click", () => {
-  const date = $("selectedDate").value;
-  const record = recordFor(date);
-  record.date = date;
-  record.updatedAt = Date.now();
-  saveRecord(date,record);
-  renderAll();
-  $("saveStatus").textContent = "Day saved successfully.";
-  toast("Day saved.");
-});
+/* =========================================
+   CSV export
+========================================= */
 
-/* Export the current user's transactions only */
+function csvCell(value) {
+  const text = String(value ?? "");
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+$("exportBtn").addEventListener("click", exportCSV);
+
 function exportCSV() {
-  const entries = allEntries();
-  if (!entries.length) return toast("No transactions to export yet.");
+  if (!currentUserId) return;
+
+  const transactions = getTransactions();
+
+  if (!transactions.length) {
+    showToast("There are no transactions to export yet.");
+    return;
+  }
+
   const rows = [
-    ["Date","Type","Description","Category","Amount","Note"],
-    ...entries.map(e => [e.date,e.type,e.title,e.category,e.amount,e.note||""])
+    ["Date", "Type", "Category", "Description", "Note", "Amount"],
+    ...transactions.map((item) => [
+      item.date,
+      item.type,
+      item.category,
+      item.title,
+      item.note || "",
+      item.amount
+    ])
   ];
-  const csv = rows.map(row => row.map(v =>
-    `"${String(v??"").replace(/"/g,'""')}"`
-  ).join(",")).join("\r\n");
-  const blob = new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"});
+
+  const csv = "\uFEFF" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
+
   link.href = url;
-  link.download = `expenseflow-${today()}.csv`;
+  link.download = "expenseflow-transactions-" + todayISO() + ".csv";
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-  toast("CSV downloaded.");
-}
-$("exportBtn").addEventListener("click",exportCSV);
-$("exportAllBtn").addEventListener("click",exportCSV);
-$("reportMonth").addEventListener("change",renderReports);
-["searchBox","typeFilter","categoryFilter"].forEach(id =>
-  $(id).addEventListener(id === "searchBox" ? "input" : "change",renderAllTransactions)
-);
 
-/* PWA installation */
-window.addEventListener("beforeinstallprompt", event => {
+  showToast("CSV export started.");
+}
+
+/* =========================================
+   PWA install and service worker
+========================================= */
+
+let installPromptEvent = null;
+
+window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
-  state.installPrompt = event;
-  $("installBtn").classList.remove("hidden");
-});
-$("installBtn").addEventListener("click", async () => {
-  if (!state.installPrompt) {
-    toast("Open the browser menu and choose Install app or Add to Home Screen.");
-    return;
-  }
-  state.installPrompt.prompt();
-  await state.installPrompt.userChoice;
-  state.installPrompt = null;
-  $("installBtn").classList.add("hidden");
-});
-window.addEventListener("appinstalled", () => toast("App installed successfully."));
+  installPromptEvent = event;
 
-/* Start */
-function init() {
-  const db = readDB();
-  setTheme(db.prefs.globalTheme || "light",false);
-  showAuth(db.users.length ? "loginForm" : "registerForm");
+  // Keep installation available without changing the main navigation.
+  const installButton = document.createElement("button");
+  installButton.type = "button";
+  installButton.id = "installAppBtn";
+  installButton.className = "nav-link";
+  installButton.innerHTML = '⬇ <span>Install app</span>';
+  installButton.addEventListener("click", async () => {
+    if (!installPromptEvent) return;
 
-  if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    installPromptEvent.prompt();
+    await installPromptEvent.userChoice;
+    installPromptEvent = null;
+    installButton.remove();
+  });
+
+  if (!$("installAppBtn")) {
+    $("sidebar-bottom")?.appendChild(installButton);
+    if (!$("sidebar-bottom")) {
+      $("logoutBtn").before(installButton);
+    }
   }
+});
+
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((error) => {
+      console.warn("Service worker registration failed:", error);
+    });
+  });
 }
-init();
+
+/* =========================================
+   Startup
+========================================= */
+
+(function init() {
+  setTheme(db.prefs.globalTheme || "light", false);
+
+  // Ensure storage objects exist even for older local data.
+  if (!db.accounts) db.accounts = {};
+  if (!db.records) db.records = {};
+  if (!db.drafts) db.drafts = {};
+  if (!db.prefs) db.prefs = { globalTheme: "light" };
+
+  $("entryDate").value = todayISO();
+  $("todayLabel").textContent = new Date().toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+
+  showAuthPage();
+})();
