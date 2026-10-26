@@ -1,1095 +1,1066 @@
-"use strict";
+import { initializeApp } from
+  "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
 
-/* =========================================
-   ExpenseFlow Pro
-   Local multi-user expense tracker
-   Voice recording intentionally excluded
-========================================= */
+import {
+  getAuth,
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+  updateProfile
+} from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
 
-const DB_KEY = "expenseflow_pro_multiuser_v2";
+import {
+  getFirestore,
+  collection,
+  doc,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  query,
+  orderBy,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+
+/* -------------------------------------------------------
+   1. FIREBASE CONFIGURATION
+------------------------------------------------------- */
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCHCeqEUf_0Jt-mHnmB9upNQ5hC8GZu1gg",
+  authDomain: "expenseflow-pro-74238.firebaseapp.com",
+  projectId: "expenseflow-pro-74238",
+  storageBucket: "expenseflow-pro-74238.firebasestorage.app",
+  messagingSenderId: "313212882336",
+  appId: "1:313212882336:web:f80494a37bbc1406b9e8c5"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getFirestore(firebaseApp);
+
+/* -------------------------------------------------------
+   2. DOM HELPERS AND APPLICATION STATE
+------------------------------------------------------- */
 
 const $ = (id) => document.getElementById(id);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-const todayISO = () => {
-  const now = new Date();
-  const offset = now.getTimezoneOffset();
-  return new Date(now.getTime() - offset * 60000)
-    .toISOString().slice(0, 10);
+const state = {
+  user: null,
+  transactions: [],
+  drafts: [],
+  page: "dashboard",
+  authMode: "login",
+  editingTransactionId: null,
+  reportTransactions: [],
+  busy: false
 };
 
-const makeId = () =>
-  window.crypto?.randomUUID
-    ? crypto.randomUUID()
-    : "id-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+const PAGE_NAMES = {
+  dashboard: "Dashboard",
+  transactions: "Transactions",
+  reports: "Reports",
+  drafts: "Saved drafts",
+  settings: "Settings"
+};
 
-const money = (amount) =>
-  new Intl.NumberFormat("en-IN", {
+const CATEGORY_OPTIONS = [
+  "Food", "Transport", "Shopping", "Bills", "Education",
+  "Health", "Salary", "Business", "Investment", "Other"
+];
+
+function localDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function monthString(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function money(value) {
+  const amount = Number(value) || 0;
+  return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2
-  }).format(Number(amount) || 0);
-
-const prettyDate = (date) => {
-  if (!date) return "—";
-  const d = new Date(date + "T12:00:00");
-  return Number.isNaN(d.getTime())
-    ? date
-    : d.toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric"
-      });
-};
-
-const escapeHTML = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  })[char]);
-
-function loadDB() {
-  try {
-    const saved = localStorage.getItem(DB_KEY);
-    if (!saved) {
-      return {
-        accounts: {},
-        records: {},
-        drafts: {},
-        prefs: { globalTheme: "light" }
-      };
-    }
-
-    const parsed = JSON.parse(saved);
-
-    return {
-      accounts: parsed.accounts || {},
-      records: parsed.records || {},
-      drafts: parsed.drafts || {},
-      prefs: parsed.prefs || { globalTheme: "light" }
-    };
-  } catch (error) {
-    console.error("Could not load database:", error);
-    return {
-      accounts: {},
-      records: {},
-      drafts: {},
-      prefs: { globalTheme: "light" }
-    };
-  }
+  }).format(amount);
 }
 
-let db = loadDB();
-let currentUserId = null;
-let recoveryUserId = null;
-let toastTimer = null;
-
-function writeDB() {
-  try {
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
-    return true;
-  } catch (error) {
-    console.error("Could not save database:", error);
-    showToast("Storage is full or unavailable. Export your data if possible.");
-    return false;
-  }
+function safeText(value) {
+  return String(value ?? "");
 }
 
-async function sha256(value) {
-  if (!window.crypto?.subtle) {
-    throw new Error("Secure hashing is unavailable. Open this app using localhost or HTTPS.");
-  }
-
-  const bytes = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+function setMessage(elementId, text, type = "") {
+  const element = $(elementId);
+  if (!element) return;
+  element.textContent = text;
+  element.className = `message${type ? ` ${type}` : ""}`;
 }
 
-async function hashPIN(pin) {
-  const salt = makeId();
-  return {
-    salt,
-    hash: await sha256(salt + ":" + pin)
+function setBusy(busy) {
+  state.busy = busy;
+  $("authSubmit").disabled = busy;
+  $("authSubmit").textContent = busy
+    ? "Please wait..."
+    : state.authMode === "register"
+      ? "Create account"
+      : "Sign in";
+}
+
+function showOnlyAuth() {
+  $("appLoader").classList.add("hidden");
+  $("authView").classList.remove("hidden");
+  $("appView").classList.add("hidden");
+}
+
+function showOnlyApp() {
+  $("appLoader").classList.add("hidden");
+  $("authView").classList.add("hidden");
+  $("appView").classList.remove("hidden");
+}
+
+function friendlyError(error) {
+  const code = error?.code || "";
+
+  const messages = {
+    "auth/email-already-in-use": "An account already exists with this email. Try signing in.",
+    "auth/invalid-email": "Enter a valid email address.",
+    "auth/weak-password": "Choose a stronger password with at least 6 characters.",
+    "auth/invalid-credential": "Email or password is incorrect.",
+    "auth/user-not-found": "No account was found. Check your email or create an account.",
+    "auth/wrong-password": "Email or password is incorrect.",
+    "auth/too-many-requests": "Too many attempts. Wait a while and try again.",
+    "auth/network-request-failed": "Network error. Check your internet connection.",
+    "auth/operation-not-allowed": "Email/password sign-in is not enabled in Firebase Authentication.",
+    "permission-denied": "Firestore denied access. Check your Firestore security rules.",
+    "unavailable": "The cloud service is temporarily unavailable. Try again."
   };
+
+  return messages[code] || error?.message || "Something went wrong. Please try again.";
 }
 
-async function pinTag(pin) {
-  // Used to check whether a PIN is already registered in this browser.
-  return sha256("expenseflow-pin-index:" + pin);
+function requireSignedInUser() {
+  if (!state.user) throw new Error("Please sign in again.");
+  return state.user;
 }
 
-function showToast(message) {
-  const toast = $("toast");
-  if (!toast) return;
-
-  toast.textContent = message;
-  toast.classList.add("show");
-
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.remove("show");
-  }, 3000);
+function getUserCollection(name) {
+  const user = requireSignedInUser();
+  return collection(db, "users", user.uid, name);
 }
 
-function showAuthForm(formId) {
-  ["loginForm", "registerForm", "forgotForm", "resetForm"]
-    .forEach((id) => $(id).classList.toggle("hidden", id !== formId));
+function getUserDocument(name, id) {
+  const user = requireSignedInUser();
+  return doc(db, "users", user.uid, name, id);
 }
 
-function showAuthPage() {
-  $("authPage").classList.remove("hidden");
-  $("appPage").classList.add("hidden");
-  currentUserId = null;
-  recoveryUserId = null;
-  showAuthForm("loginForm");
-  $("loginPin").value = "";
+/* -------------------------------------------------------
+   3. AUTHENTICATION UI
+------------------------------------------------------- */
+
+function setAuthMode(mode) {
+  state.authMode = mode;
+  const isRegister = mode === "register";
+
+  $("authTitle").textContent = isRegister ? "Create your account" : "Welcome back";
+  $("authSubtitle").textContent = isRegister
+    ? "Start managing your finances in one place."
+    : "Sign in to manage your money.";
+
+  $("nameField").classList.toggle("hidden", !isRegister);
+  $("displayName").required = isRegister;
+  $("password").autocomplete = isRegister ? "new-password" : "current-password";
+  $("authSwitchText").textContent = isRegister
+    ? "Already have an account?"
+    : "New to ExpenseFlow?";
+  $("authSwitch").textContent = isRegister ? "Sign in" : "Create account";
+  $("forgotBtn").classList.toggle("hidden", isRegister);
+
+  setMessage("authMessage", "");
+  setBusy(false);
 }
 
-function setTheme(theme, persist = true) {
-  const selected = theme === "dark" ? "dark" : "light";
+$("authSwitch").addEventListener("click", () => {
+  setAuthMode(state.authMode === "login" ? "register" : "login");
+});
 
-  document.body.classList.toggle("dark", selected === "dark");
+$("authForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.busy) return;
 
-  if (persist && currentUserId) {
-    db.prefs[currentUserId] = {
-      ...(db.prefs[currentUserId] || {}),
-      theme: selected
-    };
-    writeDB();
-  } else if (persist) {
-    db.prefs.globalTheme = selected;
-    writeDB();
-  }
-}
+  const email = $("email").value.trim().toLowerCase();
+  const password = $("password").value;
+  const displayName = $("displayName").value.trim();
 
-function toggleTheme() {
-  const darkNow = document.body.classList.contains("dark");
-  setTheme(darkNow ? "light" : "dark");
-}
-
-function enterApp(account) {
-  currentUserId = account.id;
-
-  $("authPage").classList.add("hidden");
-  $("appPage").classList.remove("hidden");
-
-  $("userName").textContent = account.name;
-  $("welcomeName").textContent = account.name;
-  $("userAvatar").textContent =
-    (account.name.trim()[0] || "U").toUpperCase();
-
-  const theme =
-    db.prefs[currentUserId]?.theme ||
-    db.prefs.globalTheme ||
-    "light";
-
-  setTheme(theme, false);
-
-  if (!Array.isArray(db.records[currentUserId])) {
-    db.records[currentUserId] = [];
+  if (!email || !password) {
+    setMessage("authMessage", "Enter your email and password.", "error");
+    return;
   }
 
-  if (!db.drafts[currentUserId]) {
-    db.drafts[currentUserId] = {};
+  if (state.authMode === "register" && !displayName) {
+    setMessage("authMessage", "Enter your name.", "error");
+    return;
   }
 
-  $("entryDate").value = todayISO();
-  $("todayLabel").textContent = new Date().toLocaleDateString("en-IN", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric"
-  });
+  if (state.authMode === "register" && password.length < 6) {
+    setMessage("authMessage", "Password must contain at least 6 characters.", "error");
+    return;
+  }
 
-  showPage("overview");
+  setBusy(true);
+  setMessage("authMessage", "");
+
+  try {
+    if (state.authMode === "register") {
+      const credential = await createUserWithEmailAndPassword(auth, email, password);
+
+      try {
+        await updateProfile(credential.user, { displayName });
+      } catch (profileError) {
+        console.error("Profile name update failed:", profileError);
+      }
+
+      setMessage("authMessage", "Account created successfully.", "success");
+    } else {
+      await signInWithEmailAndPassword(auth, email, password);
+    }
+  } catch (error) {
+    setMessage("authMessage", friendlyError(error), "error");
+  } finally {
+    setBusy(false);
+  }
+});
+
+$("forgotBtn").addEventListener("click", async () => {
+  const email = $("email").value.trim().toLowerCase();
+
+  if (!email) {
+    setMessage("authMessage", "Enter your email first, then choose Forgot password.", "error");
+    $("email").focus();
+    return;
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    setMessage("authMessage", "If an account exists for this email, a reset email will be sent.", "success");
+  } catch (error) {
+    setMessage("authMessage", friendlyError(error), "error");
+  }
+});
+
+$("signOutBtn").addEventListener("click", async () => {
+  try {
+    await signOut(auth);
+  } catch (error) {
+    alert(friendlyError(error));
+  }
+});
+
+/* -------------------------------------------------------
+   4. CLOUD DATA LOAD / SAVE
+   Each user gets:
+   users/{uid}/transactions/{documentId}
+   users/{uid}/drafts/{documentId}
+------------------------------------------------------- */
+
+async function loadCollection(name) {
+  const ref = getUserCollection(name);
+  const snapshot = await getDocs(query(ref, orderBy("updatedAt", "desc")));
+
+  return snapshot.docs.map((item) => ({
+    id: item.id,
+    ...item.data()
+  }));
+}
+
+async function loadAllData() {
+  const [transactions, drafts] = await Promise.all([
+    loadCollection("transactions"),
+    loadCollection("drafts")
+  ]);
+
+  state.transactions = transactions.filter(isValidTransaction);
+  state.drafts = drafts.filter(isValidDraft);
+
   renderAll();
 }
 
-/* =========================================
-   Registration
-========================================= */
+function isValidTransaction(item) {
+  return Boolean(
+    item &&
+    typeof item.id === "string" &&
+    (item.type === "income" || item.type === "expense") &&
+    Number.isFinite(Number(item.amount)) &&
+    Number(item.amount) > 0 &&
+    typeof item.date === "string"
+  );
+}
 
-$("showRegister").addEventListener("click", () => {
-  showAuthForm("registerForm");
-});
+function isValidDraft(item) {
+  return Boolean(item && typeof item.id === "string");
+}
 
-$("showForgot").addEventListener("click", () => {
-  showAuthForm("forgotForm");
-});
+async function saveCloudDocument(collectionName, id, data) {
+  const ref = getUserDocument(collectionName, id);
+  await setDoc(ref, {
+    ...data,
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+}
 
-["backToLogin1", "backToLogin2", "backToLogin3"].forEach((id) => {
-  $(id).addEventListener("click", () => showAuthForm("loginForm"));
-});
+async function removeCloudDocument(collectionName, id) {
+  await deleteDoc(getUserDocument(collectionName, id));
+}
 
-$("registerForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
+function makeId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
-  const name = $("registerName").value.trim();
-  const pin = $("registerPin").value.trim();
-  const confirm = $("confirmPin").value.trim();
-  const dob = $("registerDob").value;
+/* -------------------------------------------------------
+   5. NAVIGATION AND THEME
+------------------------------------------------------- */
 
-  if (name.length < 2) {
-    showToast("Please enter your full name.");
-    return;
-  }
+function navigateTo(page) {
+  if (!PAGE_NAMES[page]) return;
 
-  if (!/^\d{5}$/.test(pin)) {
-    showToast("PIN must contain exactly 5 digits.");
-    return;
-  }
+  state.page = page;
 
-  if (pin !== confirm) {
-    showToast("PINs do not match.");
-    return;
-  }
-
-  if (!dob || dob > todayISO()) {
-    showToast("Please enter a valid date of birth.");
-    return;
-  }
-
-  try {
-    const tag = await pinTag(pin);
-
-    const duplicate = Object.values(db.accounts).some(
-      (account) => account.pinTag === tag
-    );
-
-    if (duplicate) {
-      showToast("This PIN is already in use. Choose another PIN.");
-      return;
-    }
-
-    const id = makeId();
-    const pinData = await hashPIN(pin);
-    const dobHash = await sha256("expenseflow-dob:" + dob);
-
-    db.accounts[id] = {
-      id,
-      name,
-      pinTag: tag,
-      pinSalt: pinData.salt,
-      pinHash: pinData.hash,
-      dobHash,
-      createdAt: new Date().toISOString()
-    };
-
-    db.records[id] = [];
-    db.drafts[id] = {};
-
-    if (!writeDB()) {
-      delete db.accounts[id];
-      delete db.records[id];
-      delete db.drafts[id];
-      return;
-    }
-
-    $("registerForm").reset();
-    showToast("Account created successfully.");
-    enterApp(db.accounts[id]);
-  } catch (error) {
-    console.error(error);
-    showToast(error.message || "Could not create account.");
-  }
-});
-
-/* =========================================
-   Login: PIN only
-========================================= */
-
-$("loginForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const pin = $("loginPin").value.trim();
-
-  if (!/^\d{5}$/.test(pin)) {
-    showToast("Enter your 5-digit PIN.");
-    return;
-  }
-
-  try {
-    const tag = await pinTag(pin);
-
-    const account = Object.values(db.accounts).find(
-      (item) => item.pinTag === tag
-    );
-
-    if (!account) {
-      showToast("Account not found. Check your PIN or register.");
-      return;
-    }
-
-    const attemptedHash = await sha256(account.pinSalt + ":" + pin);
-
-    if (attemptedHash !== account.pinHash) {
-      showToast("Incorrect PIN.");
-      return;
-    }
-
-    $("loginForm").reset();
-    enterApp(account);
-  } catch (error) {
-    console.error(error);
-    showToast(error.message || "Login failed.");
-  }
-});
-
-/* =========================================
-   PIN recovery
-========================================= */
-
-$("forgotForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const name = $("forgotName").value.trim().toLowerCase();
-  const dob = $("forgotDob").value;
-
-  if (!name || !dob) {
-    showToast("Enter your name and date of birth.");
-    return;
-  }
-
-  try {
-    const dobHash = await sha256("expenseflow-dob:" + dob);
-
-    const account = Object.values(db.accounts).find((item) =>
-      item.name.trim().toLowerCase() === name &&
-      item.dobHash === dobHash
-    );
-
-    if (!account) {
-      showToast("Details do not match an account.");
-      return;
-    }
-
-    recoveryUserId = account.id;
-    $("forgotForm").reset();
-    showAuthForm("resetForm");
-  } catch (error) {
-    console.error(error);
-    showToast(error.message || "Could not verify details.");
-  }
-});
-
-$("resetForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  if (!recoveryUserId || !db.accounts[recoveryUserId]) {
-    showToast("Please verify your account again.");
-    showAuthForm("forgotForm");
-    return;
-  }
-
-  const pin = $("resetPin").value.trim();
-  const confirm = $("resetPinConfirm").value.trim();
-
-  if (!/^\d{5}$/.test(pin)) {
-    showToast("New PIN must contain exactly 5 digits.");
-    return;
-  }
-
-  if (pin !== confirm) {
-    showToast("PINs do not match.");
-    return;
-  }
-
-  try {
-    const tag = await pinTag(pin);
-
-    const duplicate = Object.values(db.accounts).some(
-      (account) => account.id !== recoveryUserId &&
-        account.pinTag === tag
-    );
-
-    if (duplicate) {
-      showToast("That PIN belongs to another account. Choose another.");
-      return;
-    }
-
-    const oldAccount = { ...db.accounts[recoveryUserId] };
-    const pinData = await hashPIN(pin);
-
-    db.accounts[recoveryUserId].pinTag = tag;
-    db.accounts[recoveryUserId].pinSalt = pinData.salt;
-    db.accounts[recoveryUserId].pinHash = pinData.hash;
-
-    if (!writeDB()) {
-      db.accounts[recoveryUserId] = oldAccount;
-      return;
-    }
-
-    recoveryUserId = null;
-    $("resetForm").reset();
-    showAuthForm("loginForm");
-    showToast("PIN reset successfully. Please log in.");
-  } catch (error) {
-    console.error(error);
-    showToast(error.message || "Could not reset PIN.");
-  }
-});
-
-/* =========================================
-   Navigation
-========================================= */
-
-const pageTitles = {
-  overview: "Overview",
-  transactions: "Transactions",
-  reports: "Reports"
-};
-
-function showPage(page) {
-  if (!pageTitles[page]) page = "overview";
-
-  Object.keys(pageTitles).forEach((key) => {
-    $(key + "Page").classList.toggle("hidden", key !== page);
+  $$(".page").forEach((element) => {
+    element.classList.toggle("hidden", element.id !== `page-${page}`);
   });
 
-  document.querySelectorAll(".nav-link[data-page]").forEach((button) => {
+  $$(".nav-item[data-page]").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === page);
   });
 
-  $("pageTitle").textContent = pageTitles[page];
+  $("breadcrumbTitle").textContent = PAGE_NAMES[page];
+  $("topbarHeading").textContent = PAGE_NAMES[page];
+
+  closeSidebar();
+
+  if (page === "transactions") renderTransactions();
+  if (page === "drafts") renderDrafts();
+  if (page === "reports") runReport();
 }
 
-document.querySelectorAll(".nav-link[data-page]").forEach((button) => {
-  button.addEventListener("click", () => {
-    showPage(button.dataset.page);
-    renderAll();
+$$(".nav-item[data-page]").forEach((button) => {
+  button.addEventListener("click", () => navigateTo(button.dataset.page));
+});
+
+$$("[data-goto]").forEach((button) => {
+  button.addEventListener("click", () => navigateTo(button.dataset.goto));
+});
+
+$("menuBtn").addEventListener("click", () => {
+  $("sidebar").classList.add("sidebar-open");
+  $("sidebarOverlay").classList.add("overlay-open");
+});
+
+function closeSidebar() {
+  $("sidebar").classList.remove("sidebar-open");
+  $("sidebarOverlay").classList.remove("overlay-open");
+}
+
+$("sidebarOverlay").addEventListener("click", closeSidebar);
+
+function applyTheme(theme) {
+  let resolved = theme;
+
+  if (theme === "system") {
+    resolved = window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+
+  document.documentElement.dataset.theme = resolved;
+  $("themeSelect").value = theme;
+  $("themeBtn").textContent = resolved === "dark" ? "☀" : "☾";
+}
+
+function loadSavedTheme() {
+  let savedTheme = "system";
+  try {
+    savedTheme = localStorage.getItem("expenseflow-theme") || "system";
+  } catch {
+    // Storage can be unavailable in some browser modes.
+  }
+
+  if (!["system", "light", "dark"].includes(savedTheme)) savedTheme = "system";
+  applyTheme(savedTheme);
+}
+
+function saveTheme(theme) {
+  applyTheme(theme);
+  try {
+    localStorage.setItem("expenseflow-theme", theme);
+  } catch {
+    // Theme still works for the current session.
+  }
+}
+
+$("themeBtn").addEventListener("click", () => {
+  const current = document.documentElement.dataset.theme;
+  saveTheme(current === "dark" ? "light" : "dark");
+});
+
+$("themeSelect").addEventListener("change", () => {
+  saveTheme($("themeSelect").value);
+});
+
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  let saved = "system";
+  try {
+    saved = localStorage.getItem("expenseflow-theme") || "system";
+  } catch {}
+  if (saved === "system") applyTheme("system");
+});
+
+/* -------------------------------------------------------
+   6. ACCOUNT DISPLAY
+------------------------------------------------------- */
+
+function renderAccount() {
+  const user = state.user;
+  if (!user) return;
+
+  const displayName = user.displayName?.trim() || user.email?.split("@")[0] || "User";
+  const initial = displayName.trim().charAt(0).toUpperCase() || "U";
+
+  $("sidebarUserName").textContent = displayName;
+  $("sidebarUserEmail").textContent = user.email || "";
+  $("userAvatar").textContent = initial;
+  $("settingsEmail").textContent = user.email || "—";
+}
+
+/* -------------------------------------------------------
+   7. DASHBOARD
+------------------------------------------------------- */
+
+function totals(items) {
+  return items.reduce((result, item) => {
+    const amount = Number(item.amount) || 0;
+    if (item.type === "income") result.income += amount;
+    if (item.type === "expense") result.expense += amount;
+    return result;
+  }, { income: 0, expense: 0 });
+}
+
+function sortedTransactions(items) {
+  return [...items].sort((a, b) => {
+    const dateComparison = safeText(b.date).localeCompare(safeText(a.date));
+    if (dateComparison !== 0) return dateComparison;
+    return safeText(b.updatedAt?.seconds || b.createdAt || b.id)
+      .localeCompare(safeText(a.updatedAt?.seconds || a.createdAt || a.id));
   });
-});
-
-document.querySelectorAll("[data-goto]").forEach((button) => {
-  button.addEventListener("click", () => {
-    showPage(button.dataset.goto);
-    renderAll();
-  });
-});
-
-$("brandHome").addEventListener("click", (event) => {
-  event.preventDefault();
-  showPage("overview");
-  renderAll();
-});
-
-$("quickAddBtn").addEventListener("click", () => {
-  showPage("transactions");
-  resetEntryForm();
-  $("entryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
-  $("entryTitle").focus({ preventScroll: true });
-});
-
-$("themeBtn").addEventListener("click", toggleTheme);
-$("mobileThemeBtn").addEventListener("click", toggleTheme);
-
-$("logoutBtn").addEventListener("click", () => {
-  if (!currentUserId) return;
-  currentUserId = null;
-  showAuthPage();
-  showToast("You have been logged out.");
-});
-
-/* =========================================
-   Transaction data
-========================================= */
-
-function getTransactions() {
-  if (!currentUserId) return [];
-
-  if (!Array.isArray(db.records[currentUserId])) {
-    db.records[currentUserId] = [];
-  }
-
-  return db.records[currentUserId];
 }
 
-function saveDraftForDate() {
-  if (!currentUserId) return false;
+function renderDashboard() {
+  const all = state.transactions;
+  const { income, expense } = totals(all);
+  const balance = income - expense;
 
-  const date = $("entryDate").value || todayISO();
+  $("statBalance").textContent = money(balance);
+  $("statIncome").textContent = money(income);
+  $("statExpense").textContent = money(expense);
+  $("statTransactions").textContent = String(all.length);
 
-  if (!db.drafts[currentUserId]) {
-    db.drafts[currentUserId] = {};
-  }
+  $("chartIncomeLabel").textContent = money(income);
+  $("chartExpenseLabel").textContent = money(expense);
+  $("chartNetBalance").textContent = money(balance);
 
-  db.drafts[currentUserId][date] = {
-    date,
-    type: $("entryType").value,
-    category: $("entryCategory").value,
-    amount: $("entryAmount").value,
-    title: $("entryTitle").value,
-    note: $("entryNote").value,
-    updatedAt: new Date().toISOString()
-  };
+  const max = Math.max(income, expense, 1);
+  $("chartIncome").style.width = `${(income / max) * 100}%`;
+  $("chartExpense").style.width = `${(expense / max) * 100}%`;
 
-  return writeDB();
+  const recent = sortedTransactions(all).slice(0, 5);
+  $("recentEmptyState").classList.toggle("hidden", recent.length > 0);
+  $("recentTableWrap").classList.toggle("hidden", recent.length === 0);
+
+  $("recentTransactionRows").replaceChildren(
+    ...recent.map((item) => createTransactionRow(item, false))
+  );
 }
 
-function loadDraftForDate(date) {
-  if (!currentUserId) return;
+/* -------------------------------------------------------
+   8. TRANSACTION FORM
+------------------------------------------------------- */
 
-  const draft = db.drafts[currentUserId]?.[date];
-  if (!draft) return;
+function openTransactionForm(type = "expense", item = null) {
+  navigateTo("transactions");
+  $("transactionEditor").classList.remove("hidden");
+  $("transactionForm").reset();
 
-  $("entryType").value = draft.type || "expense";
-  $("entryCategory").value = draft.category || "Other";
-  $("entryAmount").value = draft.amount || "";
-  $("entryTitle").value = draft.title || "";
-  $("entryNote").value = draft.note || "";
+  state.editingTransactionId = item?.id || null;
+  $("transactionId").value = item?.id || "";
+  $("transactionFormTitle").textContent = item ? "Edit transaction" : "New transaction";
+
+  $("typeIncome").checked = item ? item.type === "income" : type === "income";
+  $("typeExpense").checked = item ? item.type === "expense" : type !== "income";
+
+  $("txAmount").value = item?.amount ?? "";
+  $("txDate").value = item?.date || localDateString();
+  $("txDescription").value = item?.description || "";
+  $("txCategory").value = CATEGORY_OPTIONS.includes(item?.category)
+    ? item.category
+    : (item?.type === "income" ? "Salary" : "Food");
+  $("txPaymentMethod").value = item?.paymentMethod || "UPI";
+  $("txNote").value = item?.note || "";
+
+  setMessage("transactionMessage", "");
+  $("saveTransactionBtn").textContent = item ? "Update transaction" : "Save transaction";
+
+  $("transactionEditor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function resetEntryForm() {
-  $("entryForm").reset();
-  $("editTransactionId").value = "";
-  $("entryDate").value = todayISO();
-  $("entryHeading").textContent = "Daily transaction";
-  $("saveEntryBtn").textContent = "Save transaction";
-  $("cancelEditBtn").classList.add("hidden");
-  $("entryMessage").textContent = "";
-  $("entryMessage").classList.remove("error");
+function closeTransactionForm() {
+  $("transactionEditor").classList.add("hidden");
+  $("transactionForm").reset();
+  state.editingTransactionId = null;
+  $("transactionId").value = "";
+  setMessage("transactionMessage", "");
 }
 
-$("entryDate").addEventListener("change", () => {
-  const date = $("entryDate").value;
-  if (date && !$("editTransactionId").value) {
-    loadDraftForDate(date);
-  }
+$$("[data-open-form]").forEach((button) => {
+  button.addEventListener("click", () => openTransactionForm(button.dataset.openForm));
 });
 
-$("draftBtn").addEventListener("click", () => {
-  if (!currentUserId) {
-    showToast("Please log in first.");
-    return;
-  }
+$("topbarAddBtn").addEventListener("click", () => openTransactionForm("expense"));
+$("closeTransactionFormBtn").addEventListener("click", closeTransactionForm);
+$("cancelEditBtn").addEventListener("click", closeTransactionForm);
 
-  if (!$("entryDate").value) {
-    showToast("Choose a date for this draft.");
-    return;
-  }
-
-  if (saveDraftForDate()) {
-    $("entryMessage").textContent = "Draft saved. You can return to it later.";
-    $("entryMessage").classList.remove("error");
-    showToast("Draft saved successfully.");
-  }
-});
-
-/*
-  IMPORTANT ENTRY FIX:
-  This one submit handler handles both adding and editing.
-  All form IDs below exist in index.html.
-*/
-$("entryForm").addEventListener("submit", (event) => {
+$("transactionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  if (!currentUserId || !db.accounts[currentUserId]) {
-    showToast("Your session ended. Please log in again.");
-    showAuthPage();
+  const user = state.user;
+  if (!user) {
+    setMessage("transactionMessage", "Please sign in again.", "error");
     return;
   }
 
-  const date = $("entryDate").value;
-  const type = $("entryType").value;
-  const category = $("entryCategory").value;
-  const amount = Number($("entryAmount").value);
-  const title = $("entryTitle").value.trim();
-  const note = $("entryNote").value.trim();
-  const editId = $("editTransactionId").value;
+  const amount = Number($("txAmount").value);
+  const date = $("txDate").value;
+  const description = $("txDescription").value.trim();
+  const type = $("typeIncome").checked ? "income" : "expense";
 
-  if (!date) {
-    showToast("Please choose the transaction date.");
-    $("entryDate").focus();
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 999999999) {
+    setMessage("transactionMessage", "Enter an amount greater than zero.", "error");
     return;
   }
 
-  if (!["expense", "income"].includes(type)) {
-    showToast("Please choose a valid transaction type.");
+  if (!date || !description) {
+    setMessage("transactionMessage", "Enter a date and description.", "error");
     return;
   }
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    showToast("Enter an amount greater than zero.");
-    $("entryAmount").focus();
-    return;
-  }
+  const id = state.editingTransactionId || makeId();
+  const existing = state.transactions.find((item) => item.id === id);
 
-  if (!title) {
-    showToast("Please enter a description.");
-    $("entryTitle").focus();
-    return;
-  }
-
-  const transactions = getTransactions();
-  const oldTransaction = editId
-    ? transactions.find((item) => item.id === editId)
-    : null;
-
-  if (editId && !oldTransaction) {
-    showToast("Transaction not found. Please refresh and try again.");
-    resetEntryForm();
-    return;
-  }
-
-  const transaction = {
-    id: editId || makeId(),
-    date,
+  const record = {
     type,
-    category,
     amount,
-    title,
-    note,
-    createdAt: oldTransaction?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    date,
+    description,
+    category: $("txCategory").value,
+    paymentMethod: $("txPaymentMethod").value,
+    note: $("txNote").value.trim(),
+    createdAt: existing?.createdAt || Date.now()
   };
 
-  const previousRecords = transactions.map((item) => ({ ...item }));
+  const button = $("saveTransactionBtn");
+  button.disabled = true;
+  setMessage("transactionMessage", "Saving to your account...");
 
-  if (editId) {
-    const index = transactions.findIndex((item) => item.id === editId);
-    transactions[index] = transaction;
-  } else {
-    transactions.push(transaction);
+  try {
+    await saveCloudDocument("transactions", id, record);
+
+    const localRecord = { ...record, id };
+    const index = state.transactions.findIndex((item) => item.id === id);
+
+    if (index >= 0) state.transactions[index] = localRecord;
+    else state.transactions.push(localRecord);
+
+    // If a draft was converted into a transaction, remove that draft too.
+    const matchingDraft = state.drafts.find((draft) => draft.id === id);
+    if (matchingDraft) {
+      await removeCloudDocument("drafts", id);
+      state.drafts = state.drafts.filter((draft) => draft.id !== id);
+    }
+
+    closeTransactionForm();
+    renderAll();
+    navigateTo("transactions");
+  } catch (error) {
+    setMessage("transactionMessage", friendlyError(error), "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+/* -------------------------------------------------------
+   9. SAVE / RESUME / DELETE DRAFTS
+------------------------------------------------------- */
+
+$("saveDraftBtn").addEventListener("click", async () => {
+  if (!state.user) {
+    setMessage("transactionMessage", "Please sign in again.", "error");
+    return;
   }
 
-  transactions.sort((a, b) =>
-    b.date.localeCompare(a.date) ||
-    String(b.createdAt).localeCompare(String(a.createdAt))
+  const amountText = $("txAmount").value.trim();
+  const amount = amountText === "" ? null : Number(amountText);
+
+  if (amount !== null && (!Number.isFinite(amount) || amount < 0 || amount > 999999999)) {
+    setMessage("transactionMessage", "Enter a valid draft amount.", "error");
+    return;
+  }
+
+  const id = state.editingTransactionId || makeId();
+  const record = {
+    type: $("typeIncome").checked ? "income" : "expense",
+    amount,
+    date: $("txDate").value || localDateString(),
+    description: $("txDescription").value.trim(),
+    category: $("txCategory").value,
+    paymentMethod: $("txPaymentMethod").value,
+    note: $("txNote").value.trim()
+  };
+
+  const button = $("saveDraftBtn");
+  button.disabled = true;
+  setMessage("transactionMessage", "Saving draft...");
+
+  try {
+    await saveCloudDocument("drafts", id, record);
+
+    const localDraft = { ...record, id };
+    const index = state.drafts.findIndex((item) => item.id === id);
+
+    if (index >= 0) state.drafts[index] = localDraft;
+    else state.drafts.push(localDraft);
+
+    renderDrafts();
+    closeTransactionForm();
+    navigateTo("drafts");
+  } catch (error) {
+    setMessage("transactionMessage", friendlyError(error), "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function renderDrafts() {
+  const drafts = [...state.drafts].sort((a, b) =>
+    safeText(b.updatedAt?.seconds || b.id)
+      .localeCompare(safeText(a.updatedAt?.seconds || a.id))
   );
 
-  if (!writeDB()) {
-    db.records[currentUserId] = previousRecords;
-    return;
-  }
+  $("draftBadge").textContent = String(drafts.length);
+  $("draftBadge").classList.toggle("hidden", drafts.length === 0);
+  $("draftEmptyState").classList.toggle("hidden", drafts.length > 0);
 
-  // A successfully saved transaction supersedes its same-day draft.
-  if (db.drafts[currentUserId]) {
-    delete db.drafts[currentUserId][date];
-    writeDB();
-  }
+  $("draftList").replaceChildren(
+    ...drafts.map((draft) => {
+      const card = document.createElement("article");
+      card.className = "draft-card";
 
-  resetEntryForm();
-  renderAll();
+      const type = document.createElement("span");
+      type.className = "draft-type";
+      type.textContent = draft.type || "expense";
 
-  $("entryMessage").textContent = editId
-    ? "Transaction updated successfully."
-    : "Transaction saved successfully.";
+      const title = document.createElement("h3");
+      title.textContent = draft.description || "Untitled draft";
 
-  showToast(editId ? "Transaction updated." : "Transaction saved.");
-});
+      const details = document.createElement("p");
+      const amount = draft.amount == null ? "Amount not entered" : money(draft.amount);
+      details.textContent = `${amount} · ${draft.date || "No date"} · ${draft.category || "No category"}`;
 
-$("entryForm").addEventListener("reset", () => {
-  // reset event fires before the browser has reset field values.
-  setTimeout(() => {
-    if (!$("editTransactionId").value) {
-      $("entryDate").value = todayISO();
-      $("entryHeading").textContent = "Daily transaction";
-      $("saveEntryBtn").textContent = "Save transaction";
-      $("cancelEditBtn").classList.add("hidden");
-    }
-  }, 0);
-});
+      const note = document.createElement("p");
+      note.textContent = draft.note || "No note";
 
-$("cancelEditBtn").addEventListener("click", resetEntryForm);
-$("clearEntryBtn").addEventListener("click", () => {
-  $("entryMessage").textContent = "";
-  $("entryMessage").classList.remove("error");
-});
+      const actions = document.createElement("div");
+      actions.className = "draft-card-actions";
 
-/* =========================================
-   Edit and delete
-========================================= */
+      const resume = document.createElement("button");
+      resume.className = "btn btn-primary";
+      resume.type = "button";
+      resume.textContent = "Continue editing";
+      resume.addEventListener("click", () => openTransactionForm(draft.type, draft));
 
-function editTransaction(id) {
-  const transaction = getTransactions().find((item) => item.id === id);
-  if (!transaction) {
-    showToast("Transaction not found.");
-    return;
-  }
+      const remove = document.createElement("button");
+      remove.className = "btn btn-secondary";
+      remove.type = "button";
+      remove.textContent = "Delete draft";
+      remove.addEventListener("click", async () => {
+        if (!confirm("Delete this draft permanently?")) return;
 
-  showPage("transactions");
+        remove.disabled = true;
+        try {
+          await removeCloudDocument("drafts", draft.id);
+          state.drafts = state.drafts.filter((item) => item.id !== draft.id);
+          renderDrafts();
+        } catch (error) {
+          alert(friendlyError(error));
+          remove.disabled = false;
+        }
+      });
 
-  $("editTransactionId").value = transaction.id;
-  $("entryDate").value = transaction.date;
-  $("entryType").value = transaction.type;
-  $("entryCategory").value = transaction.category;
-  $("entryAmount").value = transaction.amount;
-  $("entryTitle").value = transaction.title;
-  $("entryNote").value = transaction.note || "";
-
-  $("entryHeading").textContent = "Edit transaction";
-  $("saveEntryBtn").textContent = "Update transaction";
-  $("cancelEditBtn").classList.remove("hidden");
-
-  $("entryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+      actions.append(resume, remove);
+      card.append(type, title, details, note, actions);
+      return card;
+    })
+  );
 }
 
-function deleteTransaction(id) {
-  const transaction = getTransactions().find((item) => item.id === id);
-  if (!transaction) return;
+/* -------------------------------------------------------
+   10. TRANSACTION TABLE / FILTERS / EDIT / DELETE
+------------------------------------------------------- */
 
-  if (!confirm(`Delete "${transaction.title}" (${money(transaction.amount)})?`)) {
-    return;
+function createTransactionRow(item, includeActions = true) {
+  const row = document.createElement("tr");
+
+  const titleCell = document.createElement("td");
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "transaction-title";
+
+  const mark = document.createElement("span");
+  mark.className = `transaction-mark ${item.type === "income" ? "income-mark" : "expense-mark"}`;
+  mark.textContent = item.type === "income" ? "+" : "−";
+
+  const titleCopy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = item.description || "Untitled";
+  titleCopy.append(title);
+
+  if (item.note) {
+    const note = document.createElement("div");
+    note.className = "muted";
+    note.style.fontSize = "10px";
+    note.textContent = item.note;
+    titleCopy.append(note);
   }
 
-  const oldRecords = getTransactions().map((item) => ({ ...item }));
-  db.records[currentUserId] = oldRecords.filter((item) => item.id !== id);
+  titleWrap.append(mark, titleCopy);
+  titleCell.append(titleWrap);
 
-  if (!writeDB()) {
-    db.records[currentUserId] = oldRecords;
-    return;
+  const categoryCell = document.createElement("td");
+  categoryCell.textContent = item.category || "Other";
+
+  const dateCell = document.createElement("td");
+  dateCell.textContent = item.date || "—";
+
+  const amountCell = document.createElement("td");
+  amountCell.className = `amount-cell ${item.type === "income" ? "amount-income" : "amount-expense"}`;
+  amountCell.textContent = `${item.type === "income" ? "+" : "−"}${money(item.amount)}`;
+
+  row.append(titleCell, categoryCell, dateCell);
+
+  if (includeActions) {
+    const paymentCell = document.createElement("td");
+    paymentCell.textContent = item.paymentMethod || "—";
+
+    const actionCell = document.createElement("td");
+    const actionWrap = document.createElement("div");
+    actionWrap.className = "row-actions";
+
+    const edit = document.createElement("button");
+    edit.className = "row-action";
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => openTransactionForm(item.type, item));
+
+    const remove = document.createElement("button");
+    remove.className = "row-action delete";
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`Delete "${item.description || "this transaction"}"? This cannot be undone.`)) return;
+
+      remove.disabled = true;
+      try {
+        await removeCloudDocument("transactions", item.id);
+        state.transactions = state.transactions.filter((transaction) => transaction.id !== item.id);
+        renderAll();
+      } catch (error) {
+        alert(friendlyError(error));
+        remove.disabled = false;
+      }
+    });
+
+    actionWrap.append(edit, remove);
+    actionCell.append(actionWrap);
+    row.append(paymentCell);
+    row.append(amountCell);
+    row.append(actionCell);
+  } else {
+    row.append(amountCell);
   }
 
-  if ($("editTransactionId").value === id) {
-    resetEntryForm();
-  }
-
-  renderAll();
-  showToast("Transaction deleted.");
+  return row;
 }
-
-/* =========================================
-   Filtering and rendering
-========================================= */
-
-$("filterDate").addEventListener("change", renderTransactionTable);
-$("filterType").addEventListener("change", renderTransactionTable);
-
-$("clearFiltersBtn").addEventListener("click", () => {
-  $("filterDate").value = "";
-  $("filterType").value = "all";
-  renderTransactionTable();
-});
 
 function getFilteredTransactions() {
-  const filterDate = $("filterDate").value;
-  const filterType = $("filterType").value;
+  const search = $("filterSearch").value.trim().toLowerCase();
+  const type = $("filterType").value;
+  const category = $("filterCategory").value;
+  const from = $("filterFrom").value;
+  const to = $("filterTo").value;
 
-  return getTransactions().filter((transaction) => {
-    const dateMatches = !filterDate || transaction.date === filterDate;
-    const typeMatches = filterType === "all" || transaction.type === filterType;
-    return dateMatches && typeMatches;
+  return sortedTransactions(state.transactions).filter((item) => {
+    const text = `${item.description || ""} ${item.note || ""}`.toLowerCase();
+
+    if (search && !text.includes(search)) return false;
+    if (type !== "all" && item.type !== type) return false;
+    if (category !== "all" && item.category !== category) return false;
+    if (from && item.date < from) return false;
+    if (to && item.date > to) return false;
+    return true;
   });
 }
 
-const categoryIcons = {
-  Food: "🍽️",
-  Travel: "🚕",
-  Shopping: "🛍️",
-  Bills: "🧾",
-  Health: "💊",
-  Education: "📚",
-  Salary: "💰",
-  Business: "💼",
-  Home: "🏠",
-  Entertainment: "🎬",
-  Other: "📌"
-};
+function renderTransactions() {
+  const items = getFilteredTransactions();
 
-function transactionItemHTML(transaction) {
-  const isIncome = transaction.type === "income";
+  $("transactionCount").textContent = `${items.length} record${items.length === 1 ? "" : "s"}`;
+  $("transactionsEmptyState").classList.toggle("hidden", items.length > 0);
+  $("transactionsTableWrap").classList.toggle("hidden", items.length === 0);
 
-  return `
-    <div class="transaction-item">
-      <div class="category-icon">${categoryIcons[transaction.category] || "📌"}</div>
-      <div class="transaction-info">
-        <strong>${escapeHTML(transaction.title)}</strong>
-        <small>${escapeHTML(transaction.category)} · ${prettyDate(transaction.date)}</small>
-      </div>
-      <div class="transaction-amount ${isIncome ? "income-text" : "expense-text"}">
-        ${isIncome ? "+" : "−"}${money(transaction.amount)}
-      </div>
-    </div>
-  `;
+  $("transactionRows").replaceChildren(
+    ...items.map((item) => createTransactionRow(item, true))
+  );
 }
 
-function renderTransactionTable() {
-  const wrap = $("transactionTableWrap");
-  const transactions = getFilteredTransactions();
+["filterSearch", "filterType", "filterCategory", "filterFrom", "filterTo"]
+  .forEach((id) => $(id).addEventListener(
+    id === "filterSearch" ? "input" : "change",
+    renderTransactions
+  ));
 
-  if (!transactions.length) {
-    wrap.innerHTML = `<div class="empty-state">No transactions found. Add your first entry above.</div>`;
+$("clearFiltersBtn").addEventListener("click", () => {
+  $("filterSearch").value = "";
+  $("filterType").value = "all";
+  $("filterCategory").value = "all";
+  $("filterFrom").value = "";
+  $("filterTo").value = "";
+  renderTransactions();
+});
+
+/* -------------------------------------------------------
+   11. REPORTS
+------------------------------------------------------- */
+
+function setDefaultReportPeriod() {
+  const now = new Date();
+  $("reportMonth").value = monthString(now);
+  $("reportFrom").value = `${monthString(now)}-01`;
+  $("reportTo").value = localDateString(now);
+}
+
+$("reportMonth").addEventListener("change", () => {
+  const month = $("reportMonth").value;
+  if (!/^\d{4}-\d{2}$/.test(month)) return;
+
+  const [year, monthNumber] = month.split("-").map(Number);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+
+  $("reportFrom").value = `${month}-01`;
+  $("reportTo").value = `${month}-${String(lastDay).padStart(2, "0")}`;
+});
+
+$("runReportBtn").addEventListener("click", runReport);
+
+function runReport() {
+  const from = $("reportFrom").value;
+  const to = $("reportTo").value;
+
+  if (from && to && from > to) {
+    setMessage("reportMessage", "The start date must be on or before the end date.", "error");
     return;
   }
 
-  wrap.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Description</th>
-          <th>Category</th>
-          <th>Type</th>
-          <th>Amount</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${transactions.map((transaction) => `
-          <tr>
-            <td>${prettyDate(transaction.date)}</td>
-            <td class="table-description">
-              <strong>${escapeHTML(transaction.title)}</strong>
-              ${transaction.note
-                ? `<small>${escapeHTML(transaction.note)}</small>`
-                : ""}
-            </td>
-            <td>${escapeHTML(transaction.category)}</td>
-            <td>
-              <span class="type-pill ${transaction.type}">
-                ${transaction.type === "income" ? "Income" : "Expense"}
-              </span>
-            </td>
-            <td class="${transaction.type === "income" ? "income-text" : "expense-text"}">
-              ${money(transaction.amount)}
-            </td>
-            <td>
-              <div class="row-actions">
-                <button class="small-btn" data-action="edit"
-                  data-id="${escapeHTML(transaction.id)}">Edit</button>
-                <button class="small-btn delete" data-action="delete"
-                  data-id="${escapeHTML(transaction.id)}">Delete</button>
-              </div>
-            </td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
+  setMessage("reportMessage", "");
 
-  wrap.querySelectorAll("button[data-action]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const { action, id } = button.dataset;
-      if (action === "edit") editTransaction(id);
-      if (action === "delete") deleteTransaction(id);
-    });
+  const filtered = state.transactions.filter((item) => {
+    if (from && item.date < from) return false;
+    if (to && item.date > to) return false;
+    return true;
   });
-}
 
-function renderOverview() {
-  const transactions = getTransactions();
-  const today = todayISO();
-  const monthPrefix = today.slice(0, 7);
+  state.reportTransactions = sortedTransactions(filtered);
 
-  const todayItems = transactions.filter((item) => item.date === today);
-  const monthItems = transactions.filter((item) => item.date.startsWith(monthPrefix));
-
-  const sum = (items, type) => items
-    .filter((item) => item.type === type)
-    .reduce((total, item) => total + Number(item.amount || 0), 0);
-
-  const allIncome = sum(transactions, "income");
-  const allExpense = sum(transactions, "expense");
-
-  $("todayExpense").textContent = money(sum(todayItems, "expense"));
-  $("todayIncome").textContent = money(sum(todayItems, "income"));
-  $("monthExpense").textContent = money(sum(monthItems, "expense"));
-  $("netBalance").textContent = money(allIncome - allExpense);
-
-  const recent = [...transactions]
-    .sort((a, b) =>
-      b.date.localeCompare(a.date) ||
-      String(b.createdAt).localeCompare(String(a.createdAt))
-    )
-    .slice(0, 6);
-
-  $("recentTransactions").innerHTML = recent.length
-    ? recent.map(transactionItemHTML).join("")
-    : `<div class="empty-state">No transactions yet. Use “Add transaction” to get started.</div>`;
-
-  const categoryTotals = {};
-
-  monthItems
-    .filter((item) => item.type === "expense")
-    .forEach((item) => {
-      categoryTotals[item.category] =
-        (categoryTotals[item.category] || 0) + Number(item.amount || 0);
-    });
-
-  const sortedCategories = Object.entries(categoryTotals)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5);
-
-  const highest = sortedCategories[0]?.[1] || 1;
-
-  $("overviewInsights").innerHTML = sortedCategories.length
-    ? sortedCategories.map(([category, amount]) => `
-        <div>
-          <div class="insight-row">
-            <span>${categoryIcons[category] || "📌"} ${escapeHTML(category)}</span>
-            <strong>${money(amount)}</strong>
-          </div>
-          <div class="insight-track">
-            <div class="insight-fill" style="width:${Math.max(3, amount / highest * 100)}%"></div>
-          </div>
-        </div>
-      `).join("")
-    : `<div class="empty-state">Your category insights will appear after you add expenses.</div>`;
-}
-
-function renderReports() {
-  const transactions = getTransactions();
-  const income = transactions
-    .filter((item) => item.type === "income")
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-
-  const expenses = transactions
-    .filter((item) => item.type === "expense")
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-
+  const { income, expense } = totals(filtered);
   $("reportIncome").textContent = money(income);
-  $("reportExpense").textContent = money(expenses);
-  $("reportNet").textContent = money(income - expenses);
-  $("reportCount").textContent = String(transactions.length);
+  $("reportExpense").textContent = money(expense);
+  $("reportBalance").textContent = money(income - expense);
 
-  const totals = {};
+  const categoryTotals = new Map();
 
-  transactions
-    .filter((item) => item.type === "expense")
-    .forEach((item) => {
-      totals[item.category] = (totals[item.category] || 0) + Number(item.amount || 0);
-    });
+  filtered.filter((item) => item.type === "expense").forEach((item) => {
+    const category = item.category || "Other";
+    categoryTotals.set(category, (categoryTotals.get(category) || 0) + Number(item.amount));
+  });
 
-  const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
-  const max = sorted[0]?.[1] || 1;
+  const categories = [...categoryTotals.entries()].sort((a, b) => b[1] - a[1]);
+  const totalExpenses = categories.reduce((sum, item) => sum + item[1], 0);
 
-  $("categoryReport").innerHTML = sorted.length
-    ? sorted.map(([category, amount]) => `
-        <div class="category-report-row">
-          <div class="category-report-label">
-            <span>${categoryIcons[category] || "📌"} ${escapeHTML(category)}</span>
-            <span>${money(amount)}</span>
-          </div>
-          <div class="category-report-track">
-            <div class="category-report-fill"
-              style="width:${Math.max(2, amount / max * 100)}%"></div>
-          </div>
-        </div>
-      `).join("")
-    : `<div class="empty-state">No expense data to report yet.</div>`;
+  $("categoryEmptyState").classList.toggle("hidden", categories.length > 0);
+  $("categoryBreakdown").replaceChildren(
+    ...categories.map(([category, amount]) => {
+      const item = document.createElement("div");
+      item.className = "category-item";
+
+      const info = document.createElement("div");
+      info.className = "category-info";
+
+      const name = document.createElement("span");
+      name.textContent = category;
+
+      const value = document.createElement("span");
+      const percentage = totalExpenses > 0 ? (amount / totalExpenses) * 100 : 0;
+      value.textContent = `${money(amount)} · ${percentage.toFixed(1)}%`;
+
+      info.append(name, value);
+
+      const track = document.createElement("div");
+      track.className = "category-track";
+
+      const fill = document.createElement("div");
+      fill.className = "category-fill";
+      fill.style.width = `${percentage}%`;
+      track.append(fill);
+
+      item.append(info, track);
+      return item;
+    })
+  );
 }
 
-function renderAll() {
-  if (!currentUserId) return;
-  renderOverview();
-  renderTransactionTable();
-  renderReports();
-}
+/* -------------------------------------------------------
+   12. CSV EXPORT
+------------------------------------------------------- */
 
-/* =========================================
-   CSV export
-========================================= */
-
-function csvCell(value) {
+function csvEscape(value) {
   const text = String(value ?? "");
-  return '"' + text.replace(/"/g, '""') + '"';
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
-$("exportBtn").addEventListener("click", exportCSV);
-
-function exportCSV() {
-  if (!currentUserId) return;
-
-  const transactions = getTransactions();
-
-  if (!transactions.length) {
-    showToast("There are no transactions to export yet.");
-    return;
-  }
-
-  const rows = [
-    ["Date", "Type", "Category", "Description", "Note", "Amount"],
-    ...transactions.map((item) => [
-      item.date,
-      item.type,
-      item.category,
-      item.title,
-      item.note || "",
-      item.amount
-    ])
-  ];
-
-  const csv = "\uFEFF" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
 
+  const link = document.createElement("a");
   link.href = url;
-  link.download = "expenseflow-transactions-" + todayISO() + ".csv";
-  document.body.appendChild(link);
+  link.download = filename;
+  document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
 
-  showToast("CSV export started.");
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/* =========================================
-   PWA install and service worker
-========================================= */
+function exportTransactions(items, filename = "expenseflow-transactions.csv") {
+  const headers = [
+    "Date", "Type", "Description", "Category", "Payment method", "Amount", "Note"
+  ];
 
-let installPromptEvent = null;
+  const rows = items.map((item) => [
+    item.date,
+    item.type,
+    item.description,
+    item.category,
+    item.paymentMethod,
+    Number(item.amount).toFixed(2),
+    item.note
+  ]);
 
-window.addEventListener("beforeinstallprompt", (event) => {
-  event.preventDefault();
-  installPromptEvent = event;
+  downloadCsv(filename, [headers, ...rows]);
+}
 
-  // Keep installation available without changing the main navigation.
-  const installButton = document.createElement("button");
-  installButton.type = "button";
-  installButton.id = "installAppBtn";
-  installButton.className = "nav-link";
-  installButton.innerHTML = '⬇ <span>Install app</span>';
-  installButton.addEventListener("click", async () => {
-    if (!installPromptEvent) return;
+$("exportReportBtn").addEventListener("click", () => {
+  exportTransactions(state.reportTransactions, "expenseflow-report.csv");
+});
 
-    installPromptEvent.prompt();
-    await installPromptEvent.userChoice;
-    installPromptEvent = null;
-    installButton.remove();
-  });
+$("settingsExportBtn").addEventListener("click", () => {
+  exportTransactions(sortedTransactions(state.transactions));
+  setMessage("settingsMessage", "Your CSV export has been prepared.", "success");
+});
 
-  if (!$("installAppBtn")) {
-    $("sidebar-bottom")?.appendChild(installButton);
-    if (!$("sidebar-bottom")) {
-      $("logoutBtn").before(installButton);
+/* -------------------------------------------------------
+   13. RENDER ALL VIEWS
+------------------------------------------------------- */
+
+function renderAll() {
+  renderAccount();
+  renderDashboard();
+  renderTransactions();
+  renderDrafts();
+  runReport();
+}
+
+/* -------------------------------------------------------
+   14. AUTH STATE
+------------------------------------------------------- */
+
+let firstAuthCallback = true;
+
+onAuthStateChanged(auth, async (user) => {
+  state.user = user;
+
+  if (!user) {
+    state.transactions = [];
+    state.drafts = [];
+    state.reportTransactions = [];
+    showOnlyAuth();
+    setAuthMode("login");
+
+    if (firstAuthCallback) {
+      $("appLoader").classList.add("hidden");
+      firstAuthCallback = false;
     }
+    return;
+  }
+
+  showOnlyApp();
+  loadSavedTheme();
+  renderAccount();
+
+  try {
+    await loadAllData();
+    navigateTo("dashboard");
+  } catch (error) {
+    console.error("Unable to load account data:", error);
+    alert(
+      "Could not load your cloud data. Check your internet connection and Firestore rules.\n\n" +
+      friendlyError(error)
+    );
+  } finally {
+    firstAuthCallback = false;
+    $("appLoader").classList.add("hidden");
   }
 });
+
+/* -------------------------------------------------------
+   15. INITIAL DEFAULTS AND PWA SERVICE WORKER
+------------------------------------------------------- */
+
+loadSavedTheme();
+setDefaultReportPeriod();
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((error) => {
-      console.warn("Service worker registration failed:", error);
-    });
+    navigator.serviceWorker.register("./sw.js")
+      .then((registration) => {
+        console.info("ExpenseFlow service worker registered:", registration.scope);
+      })
+      .catch((error) => {
+        console.warn("Service worker registration failed:", error);
+      });
   });
 }
-
-/* =========================================
-   Startup
-========================================= */
-
-(function init() {
-  setTheme(db.prefs.globalTheme || "light", false);
-
-  // Ensure storage objects exist even for older local data.
-  if (!db.accounts) db.accounts = {};
-  if (!db.records) db.records = {};
-  if (!db.drafts) db.drafts = {};
-  if (!db.prefs) db.prefs = { globalTheme: "light" };
-
-  $("entryDate").value = todayISO();
-  $("todayLabel").textContent = new Date().toLocaleDateString("en-IN", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric"
-  });
-
-  showAuthPage();
-})();
