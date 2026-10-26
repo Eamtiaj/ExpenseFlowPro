@@ -1,7 +1,4 @@
-
-"use strict";
-
-const CACHE_NAME = "expenseflow-pro-shell-v3";
+const CACHE_NAME = "expenseflow-pro-v1";
 
 const APP_FILES = [
   "./",
@@ -39,31 +36,42 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
 
-  // Do not cache other websites or external requests.
+  // Never intercept external Firebase or other cross-origin requests.
   if (url.origin !== self.location.origin) return;
 
+  // HTML navigation: prefer network, then cached app page.
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).catch(async () => {
-        const cachedPage = await caches.match("./index.html");
-        if (cachedPage) return cachedPage;
-        return Response.error();
-      })
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy));
+          }
+          return response;
+        })
+        .catch(async () => {
+          return (await caches.match("./index.html")) ||
+            (await caches.match("./"));
+        })
     );
     return;
   }
 
+  // Static files: use cache first, then fetch.
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(request).then(async (cached) => {
       if (cached) return cached;
 
-      return fetch(request).then((response) => {
-        if (response && response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return response;
-      });
+      const response = await fetch(request);
+
+      if (response.ok) {
+        const copy = response.clone();
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(request, copy);
+      }
+
+      return response;
     })
   );
 });
