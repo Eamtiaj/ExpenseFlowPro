@@ -1,18 +1,18 @@
-
 {
   "id": "./",
   "name": "ExpenseFlow Pro",
   "short_name": "ExpenseFlow",
-  "description": "Personal daily expense tracker",
+  "description": "Manage income, expenses and saved drafts.",
+  "lang": "en-IN",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#f4f6fb",
+  "background_color": "#f5f7fb",
   "theme_color": "#111827",
   "icons": [
     {
-      "src": "icon.svg",
+      "src": "./icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
